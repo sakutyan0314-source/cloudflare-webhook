@@ -1,11 +1,6 @@
-name = "hybrid-trigger-worker"
+name = "cloudflare-webhook"
 main = "src/index.ts"
 compatibility_date = "2026-07-29"
 
 [triggers]
 crons = ["0 23 * * *"]
-
-[[d1_databases]]
-binding = "DB"
-database_name = "app-history-db"
-database_id = "d490ec72-064d-4de2-8d08-ecb91714b338"
