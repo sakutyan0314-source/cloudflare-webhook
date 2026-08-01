@@ -1,68 +1,57 @@
+export interface Env {
+  DISCORD_WEBHOOK_URL: string;
+  AMAZON_TAG?: string;
+  DB?: D1Database;
+}
+
 export default {
-  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
-    try {
-      const url = new URL(request.url);
-      if (url.pathname === '/test') {
-        return await handleTestExecution(env);
-      }
-      return new Response("Cloudflare Webhook System is running securely.", { status: 200 });
-    } catch (error: any) {
-      console.error("Critical error in fetch handler:", error.message);
-      return new Response("Internal Server Error (Handled)", { status: 500 });
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/test") {
+      const report = await generateReport(env);
+      return new Response(report, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
+    return new Response("Automated Monetization Pipeline is running.", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
   },
 
-  async scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext): Promise<void> {
-    try {
-      await runPipeline(env);
-    } catch (error: any) {
-      console.error("Scheduled pipeline error (Handled):", error.message);
-    }
-  }
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(sendAutomatedReport(env));
+  },
 };
 
-async function runPipeline(env: any) {
-  const rawData = [
-    { title: "【自動収益化】最新トレンド情報", link: "https://example.com/item", affiliateId: "sakutyan-22" },
-    { title: null, link: "invalid-url-format", affiliateId: "" }, // 異常系・不正データ（クレンジング対象）
-  ];
-
-  for (const item of rawData) {
-    try {
-      // 異常系・データクレンジング耐性チェック（クラッシュ回避）
-      if (!item.title || !item.link || !item.link.startsWith("https://")) {
-        console.warn("Skipping invalid data entry safely:", item);
-        continue;
-      }
-
-      // 収益化リンク（アフィリエイト等）の自動付帯ロジック
-      const monetizedLink = `${item.link}?tag=${item.affiliateId}`;
-      const message = `📢 **定期レポート配信**\n- 項目: ${item.title}\n- 詳細リンク: ${monetizedLink}`;
-
-      await sendToDiscord(env.DISCORD_WEBHOOK_URL, message);
-    } catch (itemError: any) {
-      console.error("Failed to process individual item, continuing pipeline:", itemError.message);
-    }
-  }
-}
-
-async function handleTestExecution(env: any) {
+async function generateReport(env: Env): Promise<string> {
   try {
-    await runPipeline(env);
-    return new Response("Test pipeline executed successfully with Fallback & Cleansing check.", { status: 200 });
-  } catch (error: any) {
-    return new Response(`Test execution failed gracefully: ${error.message}`, { status: 500 });
+    const tag = env.AMAZON_TAG || "tyansanku3325-22";
+    // 正常系・動的アフィリエイトリンク付帯ロジック
+    const sampleItem = "最新ビジネス・AIトレンド書籍";
+    const encodedQuery = encodeURIComponent(sampleItem);
+    const affiliateUrl = `https://www.amazon.co.jp/s?k=${encodedQuery}&tag=${tag}`;
+
+    const reportContent = `【自動定期レポート】\n本日のピックアップ情報：\n- **${sampleItem}**\n- 詳細・購入リンク: ${affiliateUrl}`;
+    return reportContent;
+  } catch (error) {
+    // 異常系・フォールバック処理（プロセス全体のクラッシュを防止）
+    console.error("Report generation error:", error);
+    return "【自動定期レポート】\n本日の情報収集中に一時的なエラーが発生しましたが、システムは正常稼働を維持しています。";
   }
 }
 
-async function sendToDiscord(webhookUrl: string, content: string) {
-  if (!webhookUrl) throw new Error("DISCORD_WEBHOOK_URL is not set.");
-  const res = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content })
+async function sendAutomatedReport(env: Env): Promise<void> {
+  const webhookUrl = env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl) {
+    console.error("Discord Webhook URL is not configured.");
+    return;
+  }
+
+  const content = await generateReport(env);
+
+  const response = await fetch(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
   });
-  if (!res.ok) {
-    throw new Error(`Discord API error: ${res.statusText}`);
+
+  if (!response.ok) {
+    console.error("Failed to send report to Discord:", await response.text());
   }
 }
