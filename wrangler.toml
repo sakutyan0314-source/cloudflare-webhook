@@ -4,3 +4,7 @@ compatibility_date = "2026-07-29"
 
 [triggers]
 crons = ["0 23 * * *"]
+[[d1_databases]]
+binding = "DB"
+database_name = "zero-capital-insight-db"
+database_id = "99ef2162-afd8-459a-87eb-d197127528e2"
