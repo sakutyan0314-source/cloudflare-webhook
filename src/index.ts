@@ -10,6 +10,9 @@ export default {
     if (url.pathname === "/" || url.pathname === "") {
       return handleHomePage(env, url);
     }
+    if (url.pathname === "/sitemap.xml") {
+  return handleSitemap(env, url);
+}
     const articleMatch = url.pathname.match(/^\/article\/(\d+)\/?$/);
 
 if (articleMatch) {
@@ -396,7 +399,53 @@ function renderHomePage(results, options) {
 </body>
 </html>`;
 }
+async function handleSitemap(env, url) {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT id, created_at FROM curation_logs ORDER BY id DESC LIMIT 1000"
+    ).all();
 
+    const baseUrl = url.origin;
+
+    const articleUrls = (results ?? []).map((row) => {
+      const lastmod = row.created_at
+        ? new Date(row.created_at).toISOString()
+        : new Date().toISOString();
+
+      return `
+  <url>
+    <loc>${baseUrl}/article/${row.id}</loc>
+    <lastmod>${lastmod}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>`;
+    }).join("");
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${baseUrl}/</loc>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+${articleUrls}
+</urlset>`;
+
+    return new Response(xml, {
+      headers: {
+        "Content-Type": "application/xml; charset=utf-8",
+        "Cache-Control": "public, max-age=300"
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    return new Response(`Sitemap generation error: ${message}`, {
+      status: 500,
+      headers: TEXT_HEADERS
+    });
+  }
+}
 function determineAffiliateKeyword(content) {
   if (!content) return "ビジネス変革 DX 成功法則";
   const lower = content.toLowerCase();
