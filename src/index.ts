@@ -171,6 +171,21 @@ const description = content.replace(/[#>*_`\[\]\(\)]/g, "").replace(/\s+/g, " ")
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="${escapeHtml(pageTitle)}">
 <meta name="twitter:description" content="${escapeHtml(description)}">
+<script type="application/ld+json">
+${JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "Article",
+  headline: pageTitle,
+  description: description,
+  datePublished: row.created_at,
+  dateModified: row.created_at,
+  mainEntityOfPage: {
+    "@type": "WebPage",
+    "@id": canonicalUrl
+  },
+  url: canonicalUrl
+}).replace(/</g, "\\u003c")}
+</script>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
