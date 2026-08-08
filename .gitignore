@@ -1,0 +1,17 @@
+# Node / npm
+node_modules/
+.npm/
+
+# Wrangler / Cloudflare local files
+.wrangler/
+.wrangler_deploy_safe/
+
+# macOS
+.DS_Store
+Library/
+
+# Local backup files
+*.before-cloudflare-sync-*
+
+# Logs
+*.log
