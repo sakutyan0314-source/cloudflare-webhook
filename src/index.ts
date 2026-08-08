@@ -151,13 +151,26 @@ async function handleArticlePage(env, articleId) {
 
     const affiliateUrl =
       `https://www.amazon.co.jp/s?k=${encodeURIComponent(keyword)}&tag=${encodeURIComponent(affiliateTag)}`;
-
+const canonicalUrl = `https://cloudflare-webhook.tyansaku3325.workers.dev/article/${id}`;
+const description = content.replace(/[#>*_`\[\]\(\)]/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
     const html = `<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(pageTitle)}</title>
+  <meta name="description" content="${escapeHtml(description)}">
+<link rel="canonical" href="${canonicalUrl}">
+
+<meta property="og:type" content="article">
+<meta property="og:title" content="${escapeHtml(pageTitle)}">
+<meta property="og:description" content="${escapeHtml(description)}">
+<meta property="og:url" content="${canonicalUrl}">
+<meta property="og:site_name" content="テクノロジー＆ビジネストレンド最速まとめ速報">
+
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="${escapeHtml(pageTitle)}">
+<meta name="twitter:description" content="${escapeHtml(description)}">
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
