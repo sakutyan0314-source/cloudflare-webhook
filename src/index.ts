@@ -13,6 +13,23 @@ export default {
     if (url.pathname === "/sitemap.xml") {
   return handleSitemap(env, url);
 }
+function handleRobots(url) {
+  const body = `User-agent: *
+Allow: /
+
+Sitemap: ${url.origin}/sitemap.xml
+`;
+
+  return new Response(body, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "public, max-age=300"
+    }
+  });
+}
+if (url.pathname === "/robots.txt") {
+  return handleRobots(url);
+}
     const articleMatch = url.pathname.match(/^\/article\/(\d+)\/?$/);
 
 if (articleMatch) {
