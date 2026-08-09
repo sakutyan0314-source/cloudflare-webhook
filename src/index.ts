@@ -81,6 +81,12 @@ async function handleHomePage(env, url) {
     ).first();
     const totalItems = countResult?.total ?? 0;
     const totalPages = Math.ceil(totalItems / perPage) || 1;
+    if (currentPage > totalPages) {
+      return new Response("ページが見つかりません。", {
+        status: 404,
+        headers: TEXT_HEADERS
+      });
+    }
     const { results } = await env.DB.prepare(
       "SELECT * FROM curation_logs ORDER BY id DESC LIMIT ? OFFSET ?"
     ).bind(perPage, offset).all();
@@ -376,6 +382,13 @@ function buildDiscordMessage(content, createdAt, amazonTag, header = "📢 **【
 
 function renderHomePage(results, options) {
   const { affiliateTag, currentPage, totalPages, totalItems } = options;
+  const baseUrl = "https://cloudflare-webhook.tyansaku3325.workers.dev/";
+  const canonicalUrl = currentPage === 1 ? baseUrl : `${baseUrl}?page=${currentPage}`;
+  const pageSuffix = currentPage === 1 ? "" : ` | ${currentPage}ページ目`;
+  const pageTitle = `テクノロジー＆ビジネストレンド最速まとめ速報${pageSuffix}`;
+  const pageDescription = `AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。${currentPage === 1 ? "" : `現在は${currentPage}ページ目です。`}`;
+  const previousUrl = currentPage === 2 ? baseUrl : `${baseUrl}?page=${currentPage - 1}`;
+  const nextUrl = `${baseUrl}?page=${currentPage + 1}`;
   const postsHtml = results.length > 0 ? results.map((row) => {
     const dateStr = new Date(row.created_at).toLocaleString("ja-JP");
     const keyword = determineAffiliateKeyword(row.content);
@@ -404,19 +417,21 @@ function renderHomePage(results, options) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="google-site-verification" content="C2B44UChRSmhG5t80sCnRQg8q-sCGNQ84fBQPBJPzjk" />
-  <title>テクノロジー＆ビジネストレンド最速まとめ速報</title>
-  <meta name="description" content="AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。">
-<link rel="canonical" href="https://cloudflare-webhook.tyansaku3325.workers.dev/">
+  <title>${escapeHtml(pageTitle)}</title>
+  <meta name="description" content="${escapeHtml(pageDescription)}">
+<link rel="canonical" href="${canonicalUrl}">
+${currentPage > 1 ? `<link rel="prev" href="${previousUrl}">` : ""}
+${currentPage < totalPages ? `<link rel="next" href="${nextUrl}">` : ""}
 
 <meta property="og:type" content="website">
-<meta property="og:title" content="テクノロジー＆ビジネストレンド最速まとめ速報">
-<meta property="og:description" content="AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。">
-<meta property="og:url" content="https://cloudflare-webhook.tyansaku3325.workers.dev/">
+<meta property="og:title" content="${escapeHtml(pageTitle)}">
+<meta property="og:description" content="${escapeHtml(pageDescription)}">
+<meta property="og:url" content="${canonicalUrl}">
 <meta property="og:site_name" content="テクノロジー＆ビジネストレンド最速まとめ速報">
 
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="テクノロジー＆ビジネストレンド最速まとめ速報">
-<meta name="twitter:description" content="AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。">
+<meta name="twitter:title" content="${escapeHtml(pageTitle)}">
+<meta name="twitter:description" content="${escapeHtml(pageDescription)}">
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f7f9fa; color: #333; margin: 0; padding: 20px; }
     .container { max-width: 800px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
