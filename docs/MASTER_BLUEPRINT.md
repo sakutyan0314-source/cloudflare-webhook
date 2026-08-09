@@ -1,9 +1,9 @@
-# Master Blueprint v1.5
+# Master Blueprint v1.6
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.5
+**文書状態:** 正式基準文書 v1.6
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -139,6 +139,10 @@
 
 D1保存失敗は呼び出し元へ伝播し、保存に成功しない限りDiscordへ進まない。Cron pipelineの最終失敗はscheduled handlerへrejectとして伝播する。エラーはstage、provider、code、HTTP status、retryable、attemptだけを安全に記録し、Secret、Webhook URL、認証header、prompt、記事本文、外部response本文をログや外向けレスポンスへ含めない。
 
+Step 2では、D1の `pipeline_runs` と一意なidempotency keyを用いて、Cronと手動実行を別namespaceで管理する。Cronは `scheduledTime`、手動実行は検証済み `Idempotency-Key` を基準とし、run取得をD1のUNIQUE制約で原子的に競合解決する。状態は `running`、`saved`、`completed`、`failed` とstageで追跡し、記事保存後のDiscord通知状態も別管理する。完了済みrunの同一Key再送は既存結果を返し、新しいLLM実行、記事保存、通知を開始しない。
+
+Discordは外部Webhookであるため厳密なexactly-onceを保証しない。`notification_status=sending` のまま結果不明となった場合は自動再送せず、人間による照合・復旧判断の対象とする。
+
 モデル名や外部API仕様は変更され得るため、稼働確認時には現在の公式仕様と実際の応答を再確認する。
 
 ### 5.3 Web・SEO機能
@@ -243,8 +247,25 @@ D1保存失敗は呼び出し元へ伝播し、保存に成功しない限りDis
   - Worker Version 99、Version ID `594cbfd3-e0c6-42a2-bd1f-86f343dac3e4`、Deployment ID `8b15a21c-eaf3-4a0e-a66f-f1df700d89c7` で手動Wranglerデプロイ成功
   - 公開6経路、SEO、管理経路の401・405・404、D1 binding、SITE_URL、Secret bindings、Cronを本番確認
   - Workers Builds切断を維持し、Step 1コードpushで追加Worker Versionが作成されないことを確認
+- 保存失敗・外部API失敗・重複実行対応 Step 2「D1 idempotency・pipeline state」
+  - `0002_pipeline_reliability.sql` を本番D1へ適用し、`d1_migrations` のID 2として記録済み
+  - `pipeline_runs` を追加し、`curation_logs.pipeline_run_id` をnullable列として追加。既存9記事はNULLを維持した
+  - `pipeline_run_id` は既存データとの互換性と段階導入を優先し、D1のテーブル再構築を避けるためFKを意図的に追加していない。一意部分INDEXで1 runと1記事の対応を保護する
+  - 本番schemaは8業務テーブル、60列、INDEX・UNIQUE 12、FK 2。fingerprintは `a23ab033719d0dd1fe2ef6a0fc442954fe88bc15738534a22653a453d7f9f8d0`
+  - manual `Idempotency-Key` とCron `scheduledTime` keyを別namespaceで管理し、UNIQUE制約によるatomic run acquisitionを実装
+  - `running`、`saved`、`completed`、`failed`、stage、lease、Discord通知状態を永続管理。stale runは自動で再開せずreconciliation対象とする
+  - Step 1のtimeout、bounded retry、sanitized errorを維持し、Step 1 44件・Step 2 28件、合計72件のローカルテストに成功
+  - Step 2 WorkerをVersion 100として本番反映し、その後の`OPERATIONS_API_TOKEN`安全ローテーションに伴う現行Version IDは `9e0e5d18-033c-4820-be12-f6f19ccf469c`、Deployment IDは `20cef0df-93c5-4704-bf65-122e5080ab4c`、100% traffic
+  - 本番正常系試験でGemini、Claude、OpenAI、D1保存、Discord通知を順に完走。pipelineRunId 1、articleId 26、status `completed`、stage `done`、notification_status `sent`、notification_attempt_count 1を確認
+  - 同一Idempotency-Key再送でpipeline_runs 1→1、curation_logs 10→10、紐付け済み記事1→1、notification_attempt_count 1→1を確認。既存run 1・article 26を返し、状態・全時刻・attempt数は不変だった
+  - 外部サービス側の通信履歴を直接観測したものではないが、完了済みrunのコード経路とD1の完全不変性から、新規LLM実行・記事・Discord再通知につながる状態変化がないことを確認
+  - Step 2本番試験前のTime Travel bookmarkとschema＋data SQL exportをGit管理外に保持。Secret、記事本文、Idempotency-Key全文はBlueprintへ記録しない
+  - 工程中にCloudflare D1 APIの7403が断続的に発生し、同一OAuth・Account・Database IDのまま正常化した。OAuth refresh境界との関連が有力だが未断定
+  - 7403対策としてWranglerコマンドを並列実行せず、deploy・migration前にD1 readを確認し、7403発生時は書き込みを停止して正常化確認後に改めて承認工程へ戻る
+  - `OPERATIONS_API_TOKEN` は本番試験前に安全ローテーション済み。値はコード、Git、文書へ保存しない
+  - Workers BuildsのGit repository未接続を維持し、Step 2実装pushでも新しいWorker Versionが作成されないことを確認
 
-最新の本番確認時Worker Version IDは `594cbfd3-e0c6-42a2-bd1f-86f343dac3e4`（Version 99、100% traffic）。過去のVersion IDは変更履歴上の確認値として維持する。
+最新の本番確認時Worker Version IDは `9e0e5d18-033c-4820-be12-f6f19ccf469c`（Step 2コード、100% traffic）、Deployment IDは `20cef0df-93c5-4704-bf65-122e5080ab4c`。過去のVersion IDは変更履歴上の確認値として維持する。
 
 ### 6.2 Gitで確定済み
 
@@ -255,6 +276,7 @@ D1保存失敗は呼び出し元へ伝播し、保存に成功しない限りDis
 - 運用エンドポイント保護コードのコミットメッセージ: `Protect operations endpoints`
 - D1 baseline・復旧基盤コミット: `e09780a`（`Add D1 baseline migration and recovery guide`）
 - 通信・失敗処理安全化 Step 1コミット: `20799ab`（`Harden pipeline failure handling`）
+- D1 idempotency・pipeline state Step 2コミット: `098e820`（`Add pipeline idempotency and reliability state`）
 - 上記時点で `main` と `origin/main` は 0 ahead / 0 behind
 
 ### 6.3 実装済み・未コミット・本番未反映
@@ -271,7 +293,9 @@ D1保存失敗は呼び出し元へ伝播し、保存に成功しない限りDis
 
 ### 6.5 未実装または未完成
 
-- pipeline実行のidempotency、重複Cron・手動実行競合の防止、状態・通知済み管理（Step 2）
+- pipeline全体deadlineと費用上限
+- stale run、`notification_status=sending`、結果不明通知の照合・復旧運用
+- pipeline状態の安全な可観測性とCron自然実行の運用確認
 - Markdownから安全なセマンティックHTMLへの変換
 - OGP画像、author、publisher、image等の構造化データ強化
 - 記事・流入・クリック・成約・売上を結ぶ計測
@@ -462,9 +486,9 @@ D1保存失敗は呼び出し元へ伝播し、保存に成功しない限りDis
 2. **完了:** ベースURLを一元化
 3. **完了:** 運用エンドポイントを認証し、状態変更をPOST限定
 4. **完了:** D1スキーマ、migration、backup、復旧手順を追加
-5. 保存失敗、外部API失敗、重複実行への対応
+5. **完了:** 保存失敗、外部API失敗、重複実行への対応
    - **完了:** Step 1 通信・失敗処理安全化
-   - **未実装:** Step 2 D1 idempotency、pipeline state、重複実行防止、Discord再送管理
+   - **完了:** Step 2 D1 idempotency、pipeline state、重複実行防止、Discord通知状態管理
 6. 最低限の自動テスト、型、デプロイ手順を整備
 
 **完了条件:** 公開、生成、保存、通知を安全かつ再現可能に運用できる。
@@ -521,10 +545,11 @@ D1保存失敗は呼び出し元へ伝播し、保存に成功しない限りDis
 
 ## 13. 次の実行順序
 
-通信・失敗処理安全化 Step 1完了後の優先作業は次のとおり。
+Step 2 D1 idempotency・pipeline state完了後の優先作業は次のとおり。
 
-1. Step 2としてD1 idempotency、pipeline state、Cron・手動実行の重複防止、Discord再送管理を設計・実装する
-2. 最低限の自動テスト、型、デプロイ手順を整備する
+1. pipeline全体deadlineと費用上限を設計し、stale run・`notification_status=sending`・結果不明通知の安全な照合／復旧手順を整備する
+2. Secretや記事本文を露出しないpipeline状態確認・observabilityを整備し、次回の自然な本番Cron実行を読み取り確認する
+3. 最低限の自動テスト実行方法、型、デプロイ手順を整備する
 
 ## 14. 意思決定ルール
 
@@ -646,6 +671,21 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 正式保存場所が確定するまでは、本ファイルを承認対象の原本として扱う。正式保存場所の決定後は、管理対象の原本を一つに定め、複製ファイルによる内容の分岐を防ぐ。
 
 ## 18. 変更履歴
+
+### v1.6 — 2026-08-10
+
+- Step 2「D1 idempotency・pipeline state・重複実行防止・Discord通知状態管理」を本番反映・Git正式保存
+- `0002_pipeline_reliability.sql` を本番適用し、`pipeline_runs` とnullableな `curation_logs.pipeline_run_id` を追加。既存9記事はNULLを維持し、FKは互換性とforward-only運用のため意図的に追加しなかった
+- 本番schemaを8業務テーブル、60列、INDEX・UNIQUE 12、FK 2、fingerprint `a23ab033719d0dd1fe2ef6a0fc442954fe88bc15738534a22653a453d7f9f8d0` として確定
+- manual Idempotency-KeyとCron scheduledTime keyのnamespace分離、atomic run acquisition、run・stage・lease・通知状態管理を導入
+- 本番正常系試験でpipelineRunId 1、articleId 26がGemini→Claude→OpenAI→D1→Discord→completedまで正常完走
+- 同一Idempotency-Key再送でrun、記事、紐付け、通知attempt、全状態時刻が不変であり、既存run 1・article 26が返ることを確認
+- Discordは外部Webhookのため厳密なexactly-onceを保証せず、`sending`で結果不明の場合は自動再送せず人間が照合する方針を維持
+- Cloudflare D1 API 7403の断続発生を記録。OAuth refresh境界との関連を有力候補としつつ未断定とし、並列Wrangler禁止・事前D1 read・7403時の書き込み停止を運用標準化
+- `OPERATIONS_API_TOKEN` を安全ローテーションし、値をコード、Git、Blueprintへ保存しないことを確認
+- Step 2実装をコミット `098e820` としてGit保存。Workers Builds切断を維持し、pushによる自動Worker Version生成がないことを確認
+- 現行Worker Version ID `9e0e5d18-033c-4820-be12-f6f19ccf469c`、Deployment ID `20cef0df-93c5-4704-bf65-122e5080ab4c`、100% trafficを確認
+- 次の正式作業をpipeline全体deadline、stale/sending復旧運用、pipeline observability、Cron自然実行確認へ更新
 
 ### v1.5 — 2026-08-10
 
