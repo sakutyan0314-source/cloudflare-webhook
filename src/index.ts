@@ -11,24 +11,33 @@ export default {
       return handleHomePage(env, url);
     }
     if (url.pathname === "/sitemap.xml") {
-  return handleSitemap(env, url);
+  return handleSitemap(env);
 }
-function handleRobots(url) {
-  const body = `User-agent: *
+function handleRobots(env) {
+  try {
+    const siteUrl = getSiteUrl(env);
+    const body = `User-agent: *
 Allow: /
 
-Sitemap: ${url.origin}/sitemap.xml
+Sitemap: ${siteUrl}/sitemap.xml
 `;
 
-  return new Response(body, {
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "public, max-age=300"
-    }
-  });
+    return new Response(body, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=300"
+      }
+    });
+  } catch (error) {
+    console.error("Robots configuration error:", error);
+    return new Response("Site configuration error.", {
+      status: 500,
+      headers: TEXT_HEADERS
+    });
+  }
 }
 if (url.pathname === "/robots.txt") {
-  return handleRobots(url);
+  return handleRobots(env);
 }
     const articleMatch = url.pathname.match(/^\/article\/(\d+)\/?$/);
 
@@ -72,6 +81,7 @@ if (articleMatch) {
 
 async function handleHomePage(env, url) {
   try {
+    const siteUrl = getSiteUrl(env);
     const pageParam = parseInt(url.searchParams.get("page") || "1", 10);
     const currentPage = Number.isNaN(pageParam) || pageParam < 1 ? 1 : pageParam;
     const perPage = 5;
@@ -95,7 +105,8 @@ async function handleHomePage(env, url) {
       affiliateTag,
       currentPage,
       totalPages,
-      totalItems
+      totalItems,
+      siteUrl
     });
     return new Response(html, { headers: HTML_HEADERS });
   } catch (error) {
@@ -108,6 +119,7 @@ async function handleHomePage(env, url) {
 }
 async function handleArticlePage(env, articleId) {
   try {
+    const siteUrl = getSiteUrl(env);
     const id = Number.parseInt(articleId, 10);
 
     if (!Number.isInteger(id) || id < 1) {
@@ -157,7 +169,7 @@ async function handleArticlePage(env, articleId) {
 
     const affiliateUrl =
       `https://www.amazon.co.jp/s?k=${encodeURIComponent(keyword)}&tag=${encodeURIComponent(affiliateTag)}`;
-const canonicalUrl = `https://cloudflare-webhook.tyansaku3325.workers.dev/article/${id}`;
+const canonicalUrl = `${siteUrl}/article/${id}`;
 const description = content.replace(/[#>*_`\[\]\(\)]/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
     const html = `<!DOCTYPE html>
 <html lang="ja">
@@ -381,14 +393,13 @@ function buildDiscordMessage(content, createdAt, amazonTag, header = "📢 **【
 }
 
 function renderHomePage(results, options) {
-  const { affiliateTag, currentPage, totalPages, totalItems } = options;
-  const baseUrl = "https://cloudflare-webhook.tyansaku3325.workers.dev/";
-  const canonicalUrl = currentPage === 1 ? baseUrl : `${baseUrl}?page=${currentPage}`;
+  const { affiliateTag, currentPage, totalPages, totalItems, siteUrl } = options;
+  const canonicalUrl = currentPage === 1 ? `${siteUrl}/` : `${siteUrl}/?page=${currentPage}`;
   const pageSuffix = currentPage === 1 ? "" : ` | ${currentPage}ページ目`;
   const pageTitle = `テクノロジー＆ビジネストレンド最速まとめ速報${pageSuffix}`;
   const pageDescription = `AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。${currentPage === 1 ? "" : `現在は${currentPage}ページ目です。`}`;
-  const previousUrl = currentPage === 2 ? baseUrl : `${baseUrl}?page=${currentPage - 1}`;
-  const nextUrl = `${baseUrl}?page=${currentPage + 1}`;
+  const previousUrl = currentPage === 2 ? `${siteUrl}/` : `${siteUrl}/?page=${currentPage - 1}`;
+  const nextUrl = `${siteUrl}/?page=${currentPage + 1}`;
   const postsHtml = results.length > 0 ? results.map((row) => {
     const dateStr = new Date(row.created_at).toLocaleString("ja-JP");
     const keyword = determineAffiliateKeyword(row.content);
@@ -478,13 +489,12 @@ ${currentPage < totalPages ? `<link rel="next" href="${nextUrl}">` : ""}
 </body>
 </html>`;
 }
-async function handleSitemap(env, url) {
+async function handleSitemap(env) {
   try {
+    const siteUrl = getSiteUrl(env);
     const { results } = await env.DB.prepare(
       "SELECT id, created_at FROM curation_logs ORDER BY id DESC LIMIT 1000"
     ).all();
-
-    const baseUrl = url.origin;
 
     const articleUrls = (results ?? []).map((row) => {
       const lastmod = row.created_at
@@ -493,7 +503,7 @@ async function handleSitemap(env, url) {
 
       return `
   <url>
-    <loc>${baseUrl}/article/${row.id}</loc>
+    <loc>${siteUrl}/article/${row.id}</loc>
     <lastmod>${lastmod}</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
@@ -503,7 +513,7 @@ async function handleSitemap(env, url) {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>${baseUrl}/</loc>
+    <loc>${siteUrl}/</loc>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
@@ -561,6 +571,34 @@ function determineAffiliateKeyword(content) {
 function escapeHtml(str) {
   if (!str) return "";
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+
+function getSiteUrl(env) {
+  const rawSiteUrl = env?.SITE_URL;
+
+  if (typeof rawSiteUrl !== "string" || rawSiteUrl.trim() === "") {
+    throw new Error("SITE_URL configuration is invalid.");
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(rawSiteUrl);
+  } catch {
+    throw new Error("SITE_URL configuration is invalid.");
+  }
+
+  if (
+    parsedUrl.protocol !== "https:" ||
+    parsedUrl.username !== "" ||
+    parsedUrl.password !== "" ||
+    parsedUrl.pathname !== "/" ||
+    parsedUrl.search !== "" ||
+    parsedUrl.hash !== ""
+  ) {
+    throw new Error("SITE_URL configuration is invalid.");
+  }
+
+  return parsedUrl.origin;
 }
 
 async function sendToDiscord(webhookUrl, content) {
