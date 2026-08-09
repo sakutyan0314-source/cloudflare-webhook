@@ -1,9 +1,9 @@
-# Master Blueprint v1.4
+# Master Blueprint v1.5
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.4
+**文書状態:** 正式基準文書 v1.5
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -135,6 +135,10 @@
 4. D1の `curation_logs` に保存
 5. Discordへ通知
 
+外部API通信は明示timeout、bounded retry、`Retry-After`、response validationを共通方針とする。Geminiは45秒、ClaudeとOpenAIは60秒、Discordは10秒でtimeoutとし、LLMは最大2 attempts、Discordは最大3 attemptsに制限する。network error、timeout、408、429、5xxだけをretryし、client error、JSON parse失敗、response validation失敗はretryしない。
+
+D1保存失敗は呼び出し元へ伝播し、保存に成功しない限りDiscordへ進まない。Cron pipelineの最終失敗はscheduled handlerへrejectとして伝播する。エラーはstage、provider、code、HTTP status、retryable、attemptだけを安全に記録し、Secret、Webhook URL、認証header、prompt、記事本文、外部response本文をログや外向けレスポンスへ含めない。
+
 モデル名や外部API仕様は変更され得るため、稼働確認時には現在の公式仕様と実際の応答を再確認する。
 
 ### 5.3 Web・SEO機能
@@ -227,8 +231,20 @@
   - Git保存と本番デプロイを分離し、創業者承認後の手動Wranglerデプロイを正式方式とする
   - Workers Buildsを勝手に再接続しない
   - 切断後の実Git pushで新Versionが作成されず、Version 98が維持されたことを確認
+- 保存失敗・外部API失敗対応 Step 1「通信・失敗処理安全化」
+  - Gemini、Claude、OpenAI、Discordへ明示timeoutとbounded retryを導入
+  - `Retry-After`の秒・HTTP-date形式、最大30秒、短いbackoff＋jitterに対応
+  - LLMの不正JSON、必要構造欠損、空本文をnon-retryableな失敗とし、`No response`の記事保存を禁止
+  - sanitized errorに統一し、Secret、Authorization、Webhook URL、prompt、記事本文、外部response本文の露出を防止
+  - D1 binding不足・INSERT失敗を伝播し、D1保存失敗後はDiscordを呼ばない
+  - Cron pipelineの失敗を最終的にthrowし、Cloudflare側へrejectを伝播できる構成へ変更
+  - Discordの2xxだけを成功とし、`/test`、`/test-multillm`等の失敗レスポンスを汎用化
+  - Node標準機能とmockだけを使うローカルテスト44件が成功。本物のLLM、Discord、本番D1は使用していない
+  - Worker Version 99、Version ID `594cbfd3-e0c6-42a2-bd1f-86f343dac3e4`、Deployment ID `8b15a21c-eaf3-4a0e-a66f-f1df700d89c7` で手動Wranglerデプロイ成功
+  - 公開6経路、SEO、管理経路の401・405・404、D1 binding、SITE_URL、Secret bindings、Cronを本番確認
+  - Workers Builds切断を維持し、Step 1コードpushで追加Worker Versionが作成されないことを確認
 
-最新の本番確認時Worker Version IDは `e40cdc53-42c9-49e5-ad8a-80e83ddfe8cf`（Version 98、100% traffic）。過去のVersion IDは変更履歴上の確認値として維持する。
+最新の本番確認時Worker Version IDは `594cbfd3-e0c6-42a2-bd1f-86f343dac3e4`（Version 99、100% traffic）。過去のVersion IDは変更履歴上の確認値として維持する。
 
 ### 6.2 Gitで確定済み
 
@@ -238,6 +254,7 @@
 - 運用エンドポイント保護基準コミット: `d9ffd1e9e516594c6bc569031a4b797e48ca3471`
 - 運用エンドポイント保護コードのコミットメッセージ: `Protect operations endpoints`
 - D1 baseline・復旧基盤コミット: `e09780a`（`Add D1 baseline migration and recovery guide`）
+- 通信・失敗処理安全化 Step 1コミット: `20799ab`（`Harden pipeline failure handling`）
 - 上記時点で `main` と `origin/main` は 0 ahead / 0 behind
 
 ### 6.3 実装済み・未コミット・本番未反映
@@ -254,7 +271,7 @@
 
 ### 6.5 未実装または未完成
 
-- D1保存失敗を呼び出し元へ伝える一貫したエラー処理
+- pipeline実行のidempotency、重複Cron・手動実行競合の防止、状態・通知済み管理（Step 2）
 - Markdownから安全なセマンティックHTMLへの変換
 - OGP画像、author、publisher、image等の構造化データ強化
 - 記事・流入・クリック・成約・売上を結ぶ計測
@@ -446,6 +463,8 @@
 3. **完了:** 運用エンドポイントを認証し、状態変更をPOST限定
 4. **完了:** D1スキーマ、migration、backup、復旧手順を追加
 5. 保存失敗、外部API失敗、重複実行への対応
+   - **完了:** Step 1 通信・失敗処理安全化
+   - **未実装:** Step 2 D1 idempotency、pipeline state、重複実行防止、Discord再送管理
 6. 最低限の自動テスト、型、デプロイ手順を整備
 
 **完了条件:** 公開、生成、保存、通知を安全かつ再現可能に運用できる。
@@ -502,9 +521,9 @@
 
 ## 13. 次の実行順序
 
-D1 migration・復旧基盤工程完了後の優先作業は次のとおり。
+通信・失敗処理安全化 Step 1完了後の優先作業は次のとおり。
 
-1. 保存失敗、外部API失敗、重複実行への対応を整備する
+1. Step 2としてD1 idempotency、pipeline state、Cron・手動実行の重複防止、Discord再送管理を設計・実装する
 2. 最低限の自動テスト、型、デプロイ手順を整備する
 
 ## 14. 意思決定ルール
@@ -627,6 +646,22 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 正式保存場所が確定するまでは、本ファイルを承認対象の原本として扱う。正式保存場所の決定後は、管理対象の原本を一つに定め、複製ファイルによる内容の分岐を防ぐ。
 
 ## 18. 変更履歴
+
+### v1.5 — 2026-08-10
+
+- 保存失敗・外部API失敗対応 Step 1「通信・失敗処理安全化」を正式完了
+- Gemini 45秒、Claude・OpenAI 60秒、Discord 10秒のtimeoutを導入し、response本文読み取りまでAbortControllerの対象化
+- retryableなnetwork、timeout、408、429、5xxだけをbounded retryし、`Retry-After`、backoff、jitterへ対応
+- LLMのJSON・必要構造・非空本文validationを追加し、validation失敗をretry・D1保存しない構成へ変更
+- sanitized error、汎用HTTPエラー、構造化ログによりSecret・Webhook URL・記事本文等の露出を防止
+- D1保存失敗を伝播し、保存失敗後のDiscord送信を禁止。Cron最終失敗をCloudflareへrejectとして伝播
+- Discordの2xx成功判定を統一し、`/test`の失敗伝播とレポート生成1回化を実施
+- mockのみのローカルテスト44件、構文、差分、Wrangler dry-runに成功
+- Step 1をコミット `20799ab` としてGit保存し、手動WranglerデプロイでVersion 99へ反映
+- Version ID `594cbfd3-e0c6-42a2-bd1f-86f343dac3e4`、Deployment ID `8b15a21c-eaf3-4a0e-a66f-f1df700d89c7`、100% trafficを確認
+- 公開SEO、管理経路、D1 binding、SITE_URL、Secret bindings、Cron、Workers Builds切断の維持を確認
+- 正しいBearer token、本物のLLM、本番Discord、本番D1書き込みによる副作用テストは実行していない
+- Step 2は未実装とし、次の正式工程をD1 idempotency、pipeline state、重複実行防止、Discord再送管理へ更新
 
 ### v1.4 — 2026-08-10
 
