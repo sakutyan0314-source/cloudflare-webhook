@@ -1,9 +1,9 @@
-# Master Blueprint v1.2
+# Master Blueprint v1.3
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.2
+**文書状態:** 正式基準文書 v1.3
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -149,15 +149,15 @@
 
 ### 5.4 運用・テスト用エンドポイント
 
-現在のコードには、次のエンドポイントがある。
+運用・テスト用エンドポイントは、Cloudflare Workers Secret `OPERATIONS_API_TOKEN` を使用するBearer認証とHTTPメソッド制約で保護する。Secret値はコード、設定、Blueprint、Git履歴へ保存しない。
 
-- `/test-multillm`
-- `/view-logs`
-- `/test-discord`
-- `/get-task`
-- `/test`
+- `/test-multillm`：POSTかつBearer認証必須
+- `/view-logs`：GETかつBearer認証必須
+- `/test-discord`：POSTかつBearer認証必須
+- `/test`：POSTかつBearer認証必須
+- `/get-task`：本番無効化、常に404
 
-これらは現状、認証・HTTPメソッド制約が不十分であり、正式な安全運用状態とはみなさない。
+認証失敗は401、HTTPメソッド不正は405、Secret未設定時は保護経路のみ503とする。認証はHTTP `fetch` ルート層に限定し、scheduled handlerとCronから直接利用する共通処理には適用しない。公開SEOページは認証なしで公開を維持する。
 
 ## 6. 2026-08-10時点の状態台帳
 
@@ -194,15 +194,32 @@
   - `/article/25`、`/sitemap.xml`、`/robots.txt` HTTP 200
   - 本番記事数9件、総2ページ、sitemap XML構文とrobots Content-Typeが正常
   - SITE_URL、D1 binding、Cron、Search Consoleタグ、内部リンク、Amazonリンクが維持されたこと
+- 運用・テスト用エンドポイントの保護
+  - Secret binding名は `OPERATIONS_API_TOKEN`。Secret値はコード、設定、Blueprint、Gitへ保存しない
+  - `/test-multillm`、`/test-discord`、`/test` をPOSTかつBearer認証必須へ変更
+  - `/view-logs` をGETかつBearer認証必須へ変更
+  - `/get-task` を本番無効化し、HTTPメソッドや認証の有無にかかわらず404へ変更
+  - 認証失敗は401、HTTPメソッド不正は405、Secret未設定は保護経路のみ503
+  - 公開SEOページは認証なしで公開を維持し、CronはHTTP認証を通らず従来の共通処理を維持
+  - Secret変更Version IDは `bfa842ca-b349-4a51-9741-065733486d66`
+  - 本番Worker Version IDは `fca3b504-a671-4a13-acc9-7a3b6349824d`
+  - `/` HTTP 200、`/?page=2` HTTP 200、`/?page=3` HTTP 404
+  - `/article/25`、`/sitemap.xml`、`/robots.txt` HTTP 200
+  - `/test-multillm`、`/test-discord`、`/test` はGET 405・未認証POST 401
+  - `/view-logs` はPOST 405・未認証GET 401、`/get-task` は404
+  - Search Consoleタグ、SITE_URL、canonical、OGP、Article JSON-LD、内部リンク、Amazonリンク、D1 binding、Cron設定が維持されたこと
+  - 本番では正しいBearer tokenによる副作用成功テストを実行していない
+  - Cronはローカルモック回帰テスト成功と本番設定維持を確認。認証導入後の自然な本番Cron実行は未確認
 
-本番確認時のWorker Version IDは `243a91ff-85cb-492c-9f78-1b6e01068186`。これは履歴上の確認値であり、今後のデプロイで更新される。
+最新の本番確認時Worker Version IDは `fca3b504-a671-4a13-acc9-7a3b6349824d`。過去のVersion IDは変更履歴上の確認値として維持する。
 
 ### 6.2 Gitで確定済み
 
 - `main` → `origin/main` へpush済み
 - pagination/canonical基準コミット: `8298277c10db036f5e579175e0b26502be2b7cff`
 - ベースURL一元化基準コミット: `01192e5d12e76e1fae4749c2e786c961054cb999`
-- 最新コミットメッセージ: `Centralize site URL configuration`
+- 運用エンドポイント保護基準コミット: `d9ffd1e9e516594c6bc569031a4b797e48ca3471`
+- 運用エンドポイント保護コードのコミットメッセージ: `Protect operations endpoints`
 - 上記時点で `main` と `origin/main` は 0 ahead / 0 behind
 
 ### 6.3 実装済み・未コミット・本番未反映
@@ -219,7 +236,6 @@
 
 ### 6.5 未実装または未完成
 
-- 運用エンドポイントの認証とPOST限定
 - D1スキーマ、マイグレーション、復旧手順
 - D1保存失敗を呼び出し元へ伝える一貫したエラー処理
 - Markdownから安全なセマンティックHTMLへの変換
@@ -348,9 +364,9 @@
 
 ### 10.1 最優先リスク
 
-- 無認証の運用・テスト用エンドポイント
-- GETアクセスによる状態変更や外部API費用発生
-- `/view-logs` 等からの情報露出
+- 運用Secretの安全な保管、ローテーション、最小権限
+- 認証済み運用経路のレート制限、費用上限、重複実行防止
+- 認証情報漏えい時の `/view-logs` 等からの情報露出
 - D1スキーマと復旧手順の欠如
 - 外部API失敗時の不整合
 - シークレット、費用、モデル仕様、外部規約への依存
@@ -409,7 +425,7 @@
 
 1. **完了:** pagination/canonical整合性を本番反映・検証・Git保存
 2. **完了:** ベースURLを一元化
-3. 運用エンドポイントを認証し、状態変更をPOST限定
+3. **完了:** 運用エンドポイントを認証し、状態変更をPOST限定
 4. D1スキーマ、マイグレーション、復旧手順を追加
 5. 保存失敗、外部API失敗、重複実行への対応
 6. 最低限の自動テスト、型、デプロイ手順を整備
@@ -468,12 +484,11 @@
 
 ## 13. 次の実行順序
 
-ベースURL一元化工程完了後の優先作業は次のとおり。
+運用エンドポイント保護工程完了後の優先作業は次のとおり。
 
-1. 運用・テスト用エンドポイントを認証し、状態変更をPOST限定にする
-2. D1スキーマ、マイグレーション、復旧手順を追加する
-3. 保存失敗、外部API失敗、重複実行への対応を整備する
-4. 最低限の自動テスト、型、デプロイ手順を整備する
+1. D1スキーマ、マイグレーション、復旧手順を追加する
+2. 保存失敗、外部API失敗、重複実行への対応を整備する
+3. 最低限の自動テスト、型、デプロイ手順を整備する
 
 ## 14. 意思決定ルール
 
@@ -568,6 +583,17 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 正式保存場所が確定するまでは、本ファイルを承認対象の原本として扱う。正式保存場所の決定後は、管理対象の原本を一つに定め、複製ファイルによる内容の分岐を防ぐ。
 
 ## 18. 変更履歴
+
+### v1.3 — 2026-08-10
+
+- Cloudflare Workers Secret `OPERATIONS_API_TOKEN` を導入。Secret値はコード、設定、Blueprint、Gitへ保存しない
+- `/test-multillm`、`/test-discord`、`/test` にBearer認証とPOST限定を導入
+- `/view-logs` をBearer認証必須のGETへ限定し、`/get-task` を本番404として無効化
+- Secret変更Version ID `bfa842ca-b349-4a51-9741-065733486d66`、Worker Version ID `fca3b504-a671-4a13-acc9-7a3b6349824d` で本番反映に成功
+- 公開SEOページ、保護経路の401・405・404、D1 binding、SITE_URL、Cron設定の維持を本番確認
+- 正しいBearer tokenによる副作用成功テストは本番で実行せず、Cronはローカルモック回帰成功と本番設定維持までを確認
+- 運用エンドポイント保護変更をコミット `d9ffd1e9e516594c6bc569031a4b797e48ca3471` としてGit保存
+- Phase 1の運用エンドポイント保護を完了扱いとし、次の正式作業をD1スキーマ、マイグレーション、復旧手順へ更新
 
 ### v1.2 — 2026-08-10
 
