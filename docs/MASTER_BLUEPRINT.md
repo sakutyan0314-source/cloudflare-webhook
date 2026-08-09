@@ -1,9 +1,9 @@
-# Master Blueprint v1.3
+# Master Blueprint v1.4
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.3
+**文書状態:** 正式基準文書 v1.4
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -120,6 +120,8 @@
 - **公開ベースURL:** `env.SITE_URL`（`wrangler.toml` の `[vars]` で管理）
 - **D1 binding:** `env.DB`
 - **D1 database:** `zero-capital-insight-db`
+- **D1 database ID:** `99ef2162-afd8-459a-87eb-d197127528e2`
+- **D1 schema管理:** Git管理された `migrations/*.sql` をSingle Source of Truthとし、運用・復旧手順は `docs/D1_OPERATIONS.md` で管理
 - **Cron:** `0 23 * * *`（UTC。日本時間では毎日08:00）
 - **Git:** `main` を `origin/main` と同期して運用
 
@@ -210,8 +212,23 @@
   - Search Consoleタグ、SITE_URL、canonical、OGP、Article JSON-LD、内部リンク、Amazonリンク、D1 binding、Cron設定が維持されたこと
   - 本番では正しいBearer tokenによる副作用成功テストを実行していない
   - Cronはローカルモック回帰テスト成功と本番設定維持を確認。認証導入後の自然な本番Cron実行は未確認
+- D1 schema・migration・復旧基盤
+  - `migrations/0001_baseline.sql` を本番へ適用し、`d1_migrations` のID 1として記録済み
+  - 7業務テーブル、37列、4明示INDEX、2 UNIQUE autoindex、2 FOREIGN KEYを正式baselineとしてGit管理
+  - 業務schema fingerprintは適用前後とも `63f49486d5c565925d13e4efdda5a7f8aa3b7ac9a0796f82e7ffa06742fd0298` で完全一致
+  - baseline適用前後で業務schemaと業務データは不変。`curation_logs` は9件、ID 17〜25、日時範囲も不変で、他6業務テーブルの件数も不変
+  - 適用直前のTime Travel bookmarkとschema＋data SQL exportを取得し、exportはGit管理外へ安全に保存
+  - `docs/D1_OPERATIONS.md` を正式運用文書とし、forward-only migration、backup、復旧、承認・停止手順を定義
+  - 適用済みmigrationは編集せず、新しいforward migrationで変更する。Worker rollbackとD1 restoreは別操作として扱う
+  - restore、import、DROP、DELETEその他の破壊的操作は通常運用では行わず、創業者の個別承認を必須とする
+- Cloudflare Workers Buildsの自動production deployを停止
+  - GitHub `main` へのpushで自動production deployされる原因を、対象WorkerのGit repository連携と特定
+  - `cloudflare-webhook` だけのGit repository接続を切断。GitHub repositoryとCloudflare GitHub App全体は維持
+  - Git保存と本番デプロイを分離し、創業者承認後の手動Wranglerデプロイを正式方式とする
+  - Workers Buildsを勝手に再接続しない
+  - 切断後の実Git pushで新Versionが作成されず、Version 98が維持されたことを確認
 
-最新の本番確認時Worker Version IDは `fca3b504-a671-4a13-acc9-7a3b6349824d`。過去のVersion IDは変更履歴上の確認値として維持する。
+最新の本番確認時Worker Version IDは `e40cdc53-42c9-49e5-ad8a-80e83ddfe8cf`（Version 98、100% traffic）。過去のVersion IDは変更履歴上の確認値として維持する。
 
 ### 6.2 Gitで確定済み
 
@@ -220,6 +237,7 @@
 - ベースURL一元化基準コミット: `01192e5d12e76e1fae4749c2e786c961054cb999`
 - 運用エンドポイント保護基準コミット: `d9ffd1e9e516594c6bc569031a4b797e48ca3471`
 - 運用エンドポイント保護コードのコミットメッセージ: `Protect operations endpoints`
+- D1 baseline・復旧基盤コミット: `e09780a`（`Add D1 baseline migration and recovery guide`）
 - 上記時点で `main` と `origin/main` は 0 ahead / 0 behind
 
 ### 6.3 実装済み・未コミット・本番未反映
@@ -236,7 +254,6 @@
 
 ### 6.5 未実装または未完成
 
-- D1スキーマ、マイグレーション、復旧手順
 - D1保存失敗を呼び出し元へ伝える一貫したエラー処理
 - Markdownから安全なセマンティックHTMLへの変換
 - OGP画像、author、publisher、image等の構造化データ強化
@@ -367,7 +384,7 @@
 - 運用Secretの安全な保管、ローテーション、最小権限
 - 認証済み運用経路のレート制限、費用上限、重複実行防止
 - 認証情報漏えい時の `/view-logs` 等からの情報露出
-- D1スキーマと復旧手順の欠如
+- D1 migration・backup・復旧手順の継続的な検証
 - 外部API失敗時の不整合
 - シークレット、費用、モデル仕様、外部規約への依存
 
@@ -409,6 +426,7 @@
 - dry-run成功後にのみ本番デプロイする
 - 本番の読み取り確認を行い、D1書き込みを伴うテストを不用意に呼ばない
 - 本番検証後に意図したファイルだけをcommit・pushする
+- Git pushは本番デプロイではない。Workers BuildsのGit連携は切断状態を維持し、創業者承認後にWranglerで手動デプロイする
 - force pushやGit履歴書き換えを行わない
 
 ## 12. ロードマップ
@@ -426,7 +444,7 @@
 1. **完了:** pagination/canonical整合性を本番反映・検証・Git保存
 2. **完了:** ベースURLを一元化
 3. **完了:** 運用エンドポイントを認証し、状態変更をPOST限定
-4. D1スキーマ、マイグレーション、復旧手順を追加
+4. **完了:** D1スキーマ、migration、backup、復旧手順を追加
 5. 保存失敗、外部API失敗、重複実行への対応
 6. 最低限の自動テスト、型、デプロイ手順を整備
 
@@ -484,11 +502,10 @@
 
 ## 13. 次の実行順序
 
-運用エンドポイント保護工程完了後の優先作業は次のとおり。
+D1 migration・復旧基盤工程完了後の優先作業は次のとおり。
 
-1. D1スキーマ、マイグレーション、復旧手順を追加する
-2. 保存失敗、外部API失敗、重複実行への対応を整備する
-3. 最低限の自動テスト、型、デプロイ手順を整備する
+1. 保存失敗、外部API失敗、重複実行への対応を整備する
+2. 最低限の自動テスト、型、デプロイ手順を整備する
 
 ## 14. 意思決定ルール
 
@@ -530,6 +547,33 @@ Cloudflare等のクラウド基盤による自動メディア運営と、検索�
 
 **再検討条件:**  
 プラットフォーム規約、安全性、BANリスク、収益性、技術環境または公式に許可された連携手段に重要な変化があり、再検討する合理的理由が生じた場合のみ、創業者の判断で再評価する。
+
+### DL-002 — Git pushと本番Workerデプロイの分離
+
+**状態:** 採用
+**決定日:** 2026-08-10
+**対象:** `cloudflare-webhook` のCloudflare Workers Buildsと本番リリース方式
+
+**決定:**
+対象WorkerのGit repository接続を切断し、Git保存と本番デプロイを分離する。本番反映はdry-run、創業者承認、手動Wranglerデプロイ、本番検証の順で行う。
+
+**理由:**
+Workers BuildsがGitHub `main` へのpushを契機に、Blueprintだけの変更を含めて承認外のproduction Versionを作成し、正式なリリース標準と衝突したため。
+
+**再検討条件:**
+自動デプロイにも同等以上の承認ゲート、差分検証、環境分離、監査性を実装でき、創業者が明示承認した場合のみ再検討する。
+
+### DL-003 — 初回remote migrations listを完全な読み取り専用とみなさない
+
+**状態:** 採用
+**決定日:** 2026-08-10
+**対象:** Wranglerによる本番D1 migration管理の初回導入
+
+**決定:**
+Wrangler 4.120.0では、migration管理テーブルがない本番D1への最初の`migrations list --remote`が`d1_migrations`を暗黙に作成した。このため、初回または管理状態不明時のremote migrationコマンドは副作用を持ち得る操作として扱う。
+
+**運用条件:**
+事前にschema確認、Time Travel bookmark、Git管理外のschema＋data export、副作用範囲の確認、創業者承認を完了する。今回の`d1_migrations`は`id`、`name`、`applied_at`の3列で、適用前0件を確認後、承認済み`0001_baseline.sql`を正式適用した。
 
 ### Decision Log運用ルール
 
@@ -583,6 +627,20 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 正式保存場所が確定するまでは、本ファイルを承認対象の原本として扱う。正式保存場所の決定後は、管理対象の原本を一つに定め、複製ファイルによる内容の分岐を防ぐ。
 
 ## 18. 変更履歴
+
+### v1.4 — 2026-08-10
+
+- Git管理された `migrations/0001_baseline.sql` を本番D1へ正式適用し、`d1_migrations` のID 1として記録
+- 7業務テーブル、37列、4明示INDEX、2 UNIQUE autoindex、2 FOREIGN KEYをbaseline化し、schema fingerprintの適用前後完全一致を確認
+- baseline適用前後で業務schema・業務データが不変であることを確認
+- Time Travel bookmarkとGit管理外のschema＋data exportを適用前の復旧基準点として確保
+- `docs/D1_OPERATIONS.md` にmigration、backup、restore、forward-fix、創業者承認・停止手順を正式化
+- Wrangler 4.120.0の初回`migrations list --remote`が`d1_migrations`を暗黙作成した事実と安全ルールを記録
+- GitHub `main` pushによる自動production deployの原因をWorkers BuildsのGit連携と特定し、対象Workerだけの接続を切断
+- Git保存と本番デプロイを分離し、承認済みWrangler手動デプロイへ一本化
+- Workers Builds切断後の実Git pushで、自動production deployが発生しないことを確認済み
+- D1 baseline・復旧基盤をコミット `e09780a` としてGit保存
+- Phase 1のD1 schema・migration・backup・復旧工程を完了扱いとし、次の正式作業を保存失敗・外部API失敗・重複実行への対応へ更新
 
 ### v1.3 — 2026-08-10
 
