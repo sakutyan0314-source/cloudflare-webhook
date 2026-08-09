@@ -1,9 +1,9 @@
-# Master Blueprint v1.1
+# Master Blueprint v1.2
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.1  
+**文書状態:** 正式基準文書 v1.2
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -117,6 +117,7 @@
 - **Cloudflare Worker:** `cloudflare-webhook`
 - **本番URL:** `https://cloudflare-webhook.tyansaku3325.workers.dev`
 - **エントリーポイント:** `src/index.ts`
+- **公開ベースURL:** `env.SITE_URL`（`wrangler.toml` の `[vars]` で管理）
 - **D1 binding:** `env.DB`
 - **D1 database:** `zero-capital-insight-db`
 - **Cron:** `0 23 * * *`（UTC。日本時間では毎日08:00）
@@ -158,7 +159,7 @@
 
 これらは現状、認証・HTTPメソッド制約が不十分であり、正式な安全運用状態とはみなさない。
 
-## 6. 2026-08-09時点の状態台帳
+## 6. 2026-08-10時点の状態台帳
 
 ### 6.1 本番確認済み
 
@@ -182,14 +183,26 @@
   - 範囲外の `/?page=3` HTTP 404
   - 2ページ目のtitle、description、OGP、Twitter情報へページ番号を反映
 - pagination/canonical反映後も、Search Consoleタグ、内部リンク、Amazonリンク、個別記事、sitemap、robots、D1 binding、Cron設定が維持されたこと
+- ベースURLの一元化
+  - `SITE_URL` を `wrangler.toml` の `[vars]` で一元管理
+  - 現在の `SITE_URL` は `https://cloudflare-webhook.tyansaku3325.workers.dev`
+  - トップページのcanonical、prev/next、`og:url` を `SITE_URL` 基準へ統一
+  - 個別記事のcanonical、`og:url`、Article JSON-LDのURLを `SITE_URL` 基準へ統一
+  - sitemapのトップ・個別記事URLとrobotsのSitemap URLを `SITE_URL` 基準へ統一
+  - `request.url.origin` を公開SEO URL生成元として使用しない構成へ変更
+  - `/` HTTP 200、`/?page=2` HTTP 200、`/?page=3` HTTP 404
+  - `/article/25`、`/sitemap.xml`、`/robots.txt` HTTP 200
+  - 本番記事数9件、総2ページ、sitemap XML構文とrobots Content-Typeが正常
+  - SITE_URL、D1 binding、Cron、Search Consoleタグ、内部リンク、Amazonリンクが維持されたこと
 
-本番確認時のWorker Version IDは `93642267-ebbe-4398-af90-979687f71f0a`。これは履歴上の確認値であり、今後のデプロイで更新される。
+本番確認時のWorker Version IDは `243a91ff-85cb-492c-9f78-1b6e01068186`。これは履歴上の確認値であり、今後のデプロイで更新される。
 
 ### 6.2 Gitで確定済み
 
 - `main` → `origin/main` へpush済み
 - pagination/canonical基準コミット: `8298277c10db036f5e579175e0b26502be2b7cff`
-- コミットメッセージ: `Fix pagination canonical and navigation SEO`
+- ベースURL一元化基準コミット: `01192e5d12e76e1fae4749c2e786c961054cb999`
+- 最新コミットメッセージ: `Centralize site URL configuration`
 - 上記時点で `main` と `origin/main` は 0 ahead / 0 behind
 
 ### 6.3 実装済み・未コミット・本番未反映
@@ -207,7 +220,6 @@
 ### 6.5 未実装または未完成
 
 - 運用エンドポイントの認証とPOST限定
-- ベースURLの環境設定化とcanonical／OGP／sitemap／robotsの統一
 - D1スキーマ、マイグレーション、復旧手順
 - D1保存失敗を呼び出し元へ伝える一貫したエラー処理
 - Markdownから安全なセマンティックHTMLへの変換
@@ -396,7 +408,7 @@
 ### Phase 1: 第1号メディアの安全な公開基盤
 
 1. **完了:** pagination/canonical整合性を本番反映・検証・Git保存
-2. ベースURLを一元化
+2. **完了:** ベースURLを一元化
 3. 運用エンドポイントを認証し、状態変更をPOST限定
 4. D1スキーマ、マイグレーション、復旧手順を追加
 5. 保存失敗、外部API失敗、重複実行への対応
@@ -456,13 +468,12 @@
 
 ## 13. 次の実行順序
 
-pagination/canonical工程完了後の優先作業は次のとおり。
+ベースURL一元化工程完了後の優先作業は次のとおり。
 
-1. ベースURLを一元化し、canonical、OGP、sitemap、robotsで統一する
-2. 運用・テスト用エンドポイントを認証し、状態変更をPOST限定にする
-3. D1スキーマ、マイグレーション、復旧手順を追加する
-4. 保存失敗、外部API失敗、重複実行への対応を整備する
-5. 最低限の自動テスト、型、デプロイ手順を整備する
+1. 運用・テスト用エンドポイントを認証し、状態変更をPOST限定にする
+2. D1スキーマ、マイグレーション、復旧手順を追加する
+3. 保存失敗、外部API失敗、重複実行への対応を整備する
+4. 最低限の自動テスト、型、デプロイ手順を整備する
 
 ## 14. 意思決定ルール
 
@@ -557,6 +568,15 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 正式保存場所が確定するまでは、本ファイルを承認対象の原本として扱う。正式保存場所の決定後は、管理対象の原本を一つに定め、複製ファイルによる内容の分岐を防ぐ。
 
 ## 18. 変更履歴
+
+### v1.2 — 2026-08-10
+
+- `wrangler.toml` の `[vars]` に `SITE_URL` を導入し、公開ベースURLを一元管理
+- canonical、prev/next、`og:url`、Article JSON-LD、sitemap、robotsの公開URLを `SITE_URL` 基準へ統一
+- Worker Version ID `243a91ff-85cb-492c-9f78-1b6e01068186` で本番デプロイと読み取り検証に成功
+- `/`、`/?page=2`、範囲外ページ、個別記事、sitemap、robots、および既存機能の維持を本番確認
+- ベースURL一元化変更をコミット `01192e5d12e76e1fae4749c2e786c961054cb999` としてGit保存
+- Phase 1のベースURL一元化を完了扱いとし、次の正式作業を運用・テスト用エンドポイントの認証とPOST限定へ更新
 
 ### v1.1 — 2026-08-09
 
