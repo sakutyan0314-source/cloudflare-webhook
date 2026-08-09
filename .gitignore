@@ -5,6 +5,8 @@ node_modules/
 # Wrangler / Cloudflare local files
 .wrangler/
 .wrangler_deploy_safe/
+.dev.vars*
+.env*
 
 # macOS
 .DS_Store

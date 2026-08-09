@@ -3,6 +3,15 @@
 const HTML_HEADERS = { "Content-Type": "text/html; charset=utf-8" };
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" };
 const TEXT_HEADERS = { "Content-Type": "text/plain; charset=utf-8" };
+const PRIVATE_JSON_HEADERS = {
+  ...JSON_HEADERS,
+  "Cache-Control": "no-store"
+};
+const PRIVATE_TEXT_HEADERS = {
+  ...TEXT_HEADERS,
+  "Cache-Control": "no-store"
+};
+const AUTHORIZATION_HEADER_MAX_LENGTH = 1024;
 
 export default {
   async fetch(request, env, ctx) {
@@ -45,30 +54,38 @@ if (articleMatch) {
   return handleArticlePage(env, articleMatch[1]);
 }
     if (url.pathname === "/test-multillm") {
+      const accessError = await authorizeOperationsRequest(request, env, "POST");
+      if (accessError) return accessError;
       return handleTestMultiLlm(env);
     }
     if (url.pathname === "/view-logs") {
+      const accessError = await authorizeOperationsRequest(request, env, "GET");
+      if (accessError) return accessError;
       return handleViewLogs(env);
     }
     if (url.pathname === "/test-discord") {
+      const accessError = await authorizeOperationsRequest(request, env, "POST");
+      if (accessError) return accessError;
       return handleTestDiscord(env);
     }
     if (url.pathname === "/get-task") {
-      return handleGetTask(request, env);
+      return new Response("Not Found", { status: 404, headers: TEXT_HEADERS });
     }
     if (url.pathname === "/test") {
+      const accessError = await authorizeOperationsRequest(request, env, "POST");
+      if (accessError) return accessError;
       try {
         await sendAutomatedReport(env);
         const report = await generateReport(env);
         return new Response(
           `[テスト実行成功] Discordへ通知を送信しました。\n\n${report}`,
-          { headers: TEXT_HEADERS }
+          { headers: PRIVATE_TEXT_HEADERS }
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return new Response(`テスト実行エラー: ${message}`, {
           status: 500,
-          headers: TEXT_HEADERS
+          headers: PRIVATE_TEXT_HEADERS
         });
       }
     }
@@ -78,6 +95,74 @@ if (articleMatch) {
     ctx.waitUntil(runScheduledPipeline(env));
   }
 };
+
+async function authorizeOperationsRequest(request, env, allowedMethod) {
+  if (request.method !== allowedMethod) {
+    return new Response(
+      JSON.stringify({ status: "error", message: "Method Not Allowed" }),
+      {
+        status: 405,
+        headers: {
+          ...PRIVATE_JSON_HEADERS,
+          "Allow": allowedMethod
+        }
+      }
+    );
+  }
+
+  const expectedToken = env?.OPERATIONS_API_TOKEN;
+  if (typeof expectedToken !== "string" || expectedToken.length === 0) {
+    return new Response(
+      JSON.stringify({ status: "error", message: "Service Unavailable" }),
+      { status: 503, headers: PRIVATE_JSON_HEADERS }
+    );
+  }
+
+  const authorization = request.headers.get("Authorization");
+  if (
+    typeof authorization !== "string" ||
+    authorization.length > AUTHORIZATION_HEADER_MAX_LENGTH
+  ) {
+    return unauthorizedResponse();
+  }
+
+  const match = authorization.match(/^Bearer ([^\s]+)$/i);
+  if (!match || !(await tokensMatch(match[1], expectedToken))) {
+    return unauthorizedResponse();
+  }
+
+  return null;
+}
+
+function unauthorizedResponse() {
+  return new Response(
+    JSON.stringify({ status: "error", message: "Unauthorized" }),
+    {
+      status: 401,
+      headers: {
+        ...PRIVATE_JSON_HEADERS,
+        "WWW-Authenticate": "Bearer"
+      }
+    }
+  );
+}
+
+async function tokensMatch(receivedToken, expectedToken) {
+  const encoder = new TextEncoder();
+  const [receivedDigest, expectedDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(receivedToken)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expectedToken))
+  ]);
+  const receivedBytes = new Uint8Array(receivedDigest);
+  const expectedBytes = new Uint8Array(expectedDigest);
+  let difference = 0;
+
+  for (let index = 0; index < receivedBytes.length; index += 1) {
+    difference |= receivedBytes[index] ^ expectedBytes[index];
+  }
+
+  return difference === 0;
+}
 
 async function handleHomePage(env, url) {
   try {
@@ -304,13 +389,13 @@ async function handleTestMultiLlm(env) {
     await saveToD1(env.DB, "pro_consensus_summary", "Pro-Consensus Pipeline", finalArticle, timestamp);
     return new Response(
       JSON.stringify({ status: "completed_deep_consensus", article: finalArticle }, null, 2),
-      { headers: JSON_HEADERS }
+      { headers: PRIVATE_JSON_HEADERS }
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return new Response(JSON.stringify({ status: "error", message }, null, 2), {
       status: 500,
-      headers: JSON_HEADERS
+      headers: PRIVATE_JSON_HEADERS
     });
   }
 }
@@ -322,13 +407,13 @@ async function handleViewLogs(env) {
     ).all();
     return new Response(
       JSON.stringify({ status: "success", logs: results }, null, 2),
-      { headers: JSON_HEADERS }
+      { headers: PRIVATE_JSON_HEADERS }
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return new Response(JSON.stringify({ status: "error", message }, null, 2), {
       status: 500,
-      headers: JSON_HEADERS
+      headers: PRIVATE_JSON_HEADERS
     });
   }
 }
@@ -341,7 +426,7 @@ async function handleTestDiscord(env) {
     if (!results || results.length === 0) {
       return new Response(
         JSON.stringify({ status: "error", message: "No logs found in D1." }, null, 2),
-        { status: 404, headers: JSON_HEADERS }
+        { status: 404, headers: PRIVATE_JSON_HEADERS }
       );
     }
     const latestLog = results[0];
@@ -349,13 +434,13 @@ async function handleTestDiscord(env) {
     const discordRes = await sendToDiscord(env.DISCORD_WEBHOOK_URL, message);
     return new Response(
       JSON.stringify({ status: "discord_sent_success", discordResponse: discordRes }, null, 2),
-      { headers: JSON_HEADERS }
+      { headers: PRIVATE_JSON_HEADERS }
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return new Response(JSON.stringify({ status: "error", message }, null, 2), {
       status: 500,
-      headers: JSON_HEADERS
+      headers: PRIVATE_JSON_HEADERS
     });
   }
 }
