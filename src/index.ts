@@ -12,6 +12,29 @@ const PRIVATE_TEXT_HEADERS = {
   "Cache-Control": "no-store"
 };
 const AUTHORIZATION_HEADER_MAX_LENGTH = 1024;
+const EXTERNAL_API_TIMEOUTS = {
+  gemini: 45_000,
+  claude: 60_000,
+  openai: 60_000,
+  discord: 10_000
+};
+const LLM_MAX_ATTEMPTS = 2;
+const DISCORD_MAX_ATTEMPTS = 3;
+const MAX_RETRY_AFTER_MS = 30_000;
+const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
+
+class OperationError extends Error {
+  constructor({ stage, provider, errorCode, httpStatus = null, retryable = false, attempt = 1 }) {
+    super("Operation failed");
+    this.name = "OperationError";
+    this.stage = stage;
+    this.provider = provider;
+    this.errorCode = errorCode;
+    this.httpStatus = httpStatus;
+    this.retryable = retryable;
+    this.attempt = attempt;
+  }
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -38,7 +61,7 @@ Sitemap: ${siteUrl}/sitemap.xml
       }
     });
   } catch (error) {
-    console.error("Robots configuration error:", error);
+    logOperationFailure(error, "robots", "worker");
     return new Response("Site configuration error.", {
       status: 500,
       headers: TEXT_HEADERS
@@ -75,15 +98,14 @@ if (articleMatch) {
       const accessError = await authorizeOperationsRequest(request, env, "POST");
       if (accessError) return accessError;
       try {
-        await sendAutomatedReport(env);
-        const report = await generateReport(env);
+        const report = await sendAutomatedReport(env);
         return new Response(
           `[テスト実行成功] Discordへ通知を送信しました。\n\n${report}`,
           { headers: PRIVATE_TEXT_HEADERS }
         );
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return new Response(`テスト実行エラー: ${message}`, {
+        logOperationFailure(error, "test", "worker");
+        return new Response("Operation failed", {
           status: 500,
           headers: PRIVATE_TEXT_HEADERS
         });
@@ -195,8 +217,8 @@ async function handleHomePage(env, url) {
     });
     return new Response(html, { headers: HTML_HEADERS });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return new Response(`サイトの読み込み中にエラーが発生しました: ${message}`, {
+    logOperationFailure(error, "home_page", "worker");
+    return new Response("サイトの読み込み中にエラーが発生しました。", {
       status: 500,
       headers: TEXT_HEADERS
     });
@@ -368,13 +390,10 @@ ${JSON.stringify({
     });
 
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : String(error);
-
-    console.error("Article page error:", error);
+    logOperationFailure(error, "article_page", "worker");
 
     return new Response(
-      `記事の読み込み中にエラーが発生しました: ${message}`,
+      "記事の読み込み中にエラーが発生しました。",
       {
         status: 500,
         headers: TEXT_HEADERS
@@ -392,8 +411,8 @@ async function handleTestMultiLlm(env) {
       { headers: PRIVATE_JSON_HEADERS }
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return new Response(JSON.stringify({ status: "error", message }, null, 2), {
+    logOperationFailure(error, "test_multillm", "worker");
+    return new Response(JSON.stringify({ status: "error", message: "Operation failed" }, null, 2), {
       status: 500,
       headers: PRIVATE_JSON_HEADERS
     });
@@ -410,8 +429,8 @@ async function handleViewLogs(env) {
       { headers: PRIVATE_JSON_HEADERS }
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return new Response(JSON.stringify({ status: "error", message }, null, 2), {
+    logOperationFailure(error, "view_logs", "d1");
+    return new Response(JSON.stringify({ status: "error", message: "Operation failed" }, null, 2), {
       status: 500,
       headers: PRIVATE_JSON_HEADERS
     });
@@ -437,18 +456,18 @@ async function handleTestDiscord(env) {
       { headers: PRIVATE_JSON_HEADERS }
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return new Response(JSON.stringify({ status: "error", message }, null, 2), {
+    logOperationFailure(error, "test_discord", "worker");
+    return new Response(JSON.stringify({ status: "error", message: "Operation failed" }, null, 2), {
       status: 500,
       headers: PRIVATE_JSON_HEADERS
     });
   }
 }
 
-async function runScheduledPipeline(env) {
+async function runScheduledPipeline(env, runtime = {}) {
   console.log("Cron triggered: Running Deep Pro-Consensus pipeline...");
   try {
-    const finalArticle = await runProConsensusPipeline(env);
+    const finalArticle = await runProConsensusPipeline(env, runtime);
     const timestamp = (new Date()).toISOString();
     await saveToD1(env.DB, "cron_pro_consensus", "Pro-Consensus Pipeline", finalArticle, timestamp);
     const message = buildDiscordMessage(
@@ -457,16 +476,17 @@ async function runScheduledPipeline(env) {
       env.AMAZON_TAG,
       "🚀 **【自動速報配信（ビジネストレンド）】**"
     );
-    await sendToDiscord(env.DISCORD_WEBHOOK_URL, message);
+    await sendToDiscord(env.DISCORD_WEBHOOK_URL, message, runtime);
   } catch (error) {
-    console.error("Error in scheduled execution:", error);
+    logOperationFailure(error, "scheduled_pipeline", "worker");
+    throw normalizeOperationError(error, "scheduled_pipeline", "worker");
   }
 }
 
-async function runProConsensusPipeline(env) {
-  const draft = await callGemini(env.GEMINI_API_KEY);
-  const reviewed = await callClaude(env.CLAUDE_API_KEY, draft);
-  return callOpenAI(env.OPENAI_API_KEY, reviewed);
+async function runProConsensusPipeline(env, runtime = {}) {
+  const draft = await callGemini(env.GEMINI_API_KEY, runtime);
+  const reviewed = await callClaude(env.CLAUDE_API_KEY, draft, runtime);
+  return callOpenAI(env.OPENAI_API_KEY, reviewed, runtime);
 }
 
 function buildDiscordMessage(content, createdAt, amazonTag, header = "📢 **【テクノロジー＆ビジネストレンド速報】**") {
@@ -612,9 +632,8 @@ ${articleUrls}
       }
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-
-    return new Response(`Sitemap generation error: ${message}`, {
+    logOperationFailure(error, "sitemap", "worker");
+    return new Response("Sitemap generation error.", {
       status: 500,
       headers: TEXT_HEADERS
     });
@@ -686,50 +705,230 @@ function getSiteUrl(env) {
   return parsedUrl.origin;
 }
 
-async function sendToDiscord(webhookUrl, content) {
-  if (!webhookUrl) throw new Error("DISCORD_WEBHOOK_URL is not configured.");
-  const response = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content })
+function isRetryableHttpStatus(status) {
+  return RETRYABLE_HTTP_STATUSES.has(status) || (status >= 500 && status <= 599);
+}
+
+function parseRetryAfter(value, nowMs = Date.now()) {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const trimmed = value.trim();
+  const seconds = Number(trimmed);
+
+  if (Number.isFinite(seconds)) {
+    return seconds >= 0
+      ? Math.min(Math.round(seconds * 1000), MAX_RETRY_AFTER_MS)
+      : null;
+  }
+
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isFinite(dateMs)) return null;
+  return Math.min(Math.max(dateMs - nowMs, 0), MAX_RETRY_AFTER_MS);
+}
+
+function retryDelayMs(error, attempt, runtime) {
+  if (Number.isFinite(error.retryAfterMs)) return error.retryAfterMs;
+  const random = runtime.random ?? Math.random;
+  return Math.min(250 * (2 ** (attempt - 1)) + Math.floor(random() * 250), MAX_RETRY_AFTER_MS);
+}
+
+function defaultSleep(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function normalizeOperationError(error, stage, provider, attempt = 1) {
+  if (error instanceof OperationError) return error;
+  return new OperationError({
+    stage,
+    provider,
+    errorCode: "unexpected_error",
+    retryable: false,
+    attempt
   });
-  if (!response.ok) throw new Error(`Discord API Error: HTTP ${response.status}`);
+}
+
+function logOperationFailure(error, fallbackStage, fallbackProvider) {
+  const safeError = normalizeOperationError(error, fallbackStage, fallbackProvider);
+  console.error("Operation failure", {
+    stage: safeError.stage,
+    provider: safeError.provider,
+    error_code: safeError.errorCode,
+    http_status: safeError.httpStatus,
+    retryable: safeError.retryable,
+    attempt: safeError.attempt
+  });
+}
+
+function requireProviderSecret(value, provider, stage) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new OperationError({
+      stage,
+      provider,
+      errorCode: "configuration_missing"
+    });
+  }
+}
+
+async function parseJsonResponse(response, provider, stage, signal) {
+  try {
+    return await response.json();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new OperationError({
+      stage,
+      provider,
+      errorCode: "invalid_json"
+    });
+  }
+}
+
+function requireResponseText(value, provider, stage) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new OperationError({
+      stage,
+      provider,
+      errorCode: "invalid_response"
+    });
+  }
+  return value.trim();
+}
+
+async function requestWithRetry(options, runtime = {}) {
+  const fetchImpl = runtime.fetch ?? fetch;
+  const sleep = runtime.sleep ?? defaultSleep;
+
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    let operationError;
+
+    try {
+      const response = await fetchImpl(options.url, {
+        ...options.init,
+        signal: controller.signal
+      });
+
+      if (response.ok) {
+        return options.consumeResponse
+          ? await options.consumeResponse(response, controller.signal)
+          : response;
+      }
+
+      operationError = new OperationError({
+        stage: options.stage,
+        provider: options.provider,
+        errorCode: "http_error",
+        httpStatus: response.status,
+        retryable: isRetryableHttpStatus(response.status),
+        attempt
+      });
+      operationError.retryAfterMs = parseRetryAfter(response.headers?.get("Retry-After"));
+      if (response.body && typeof response.body.cancel === "function") {
+        await response.body.cancel().catch(() => {});
+      }
+    } catch (error) {
+      operationError = error instanceof OperationError
+        ? error
+        : new OperationError({
+          stage: options.stage,
+          provider: options.provider,
+          errorCode: controller.signal.aborted ? "timeout" : "network_error",
+          retryable: true,
+          attempt
+        });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!operationError.retryable || attempt >= options.maxAttempts) {
+      throw operationError;
+    }
+
+    await sleep(retryDelayMs(operationError, attempt, runtime));
+  }
+
+  throw new OperationError({
+    stage: options.stage,
+    provider: options.provider,
+    errorCode: "retry_exhausted"
+  });
+}
+
+async function sendToDiscord(webhookUrl, content, runtime = {}) {
+  if (!webhookUrl) {
+    throw new OperationError({
+      stage: "discord",
+      provider: "discord",
+      errorCode: "configuration_missing"
+    });
+  }
+  await requestWithRetry({
+    provider: "discord",
+    stage: "discord",
+    url: webhookUrl,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content })
+    },
+    timeoutMs: runtime.timeouts?.discord ?? EXTERNAL_API_TIMEOUTS.discord,
+    maxAttempts: DISCORD_MAX_ATTEMPTS
+  }, runtime);
   return "Message sent successfully to Discord.";
 }
 
 async function saveToD1(db, sourceType, llmName, content, createdAt) {
-  if (!db) return;
+  if (!db) {
+    throw new OperationError({
+      stage: "d1_save",
+      provider: "d1",
+      errorCode: "binding_missing"
+    });
+  }
   try {
     await db.prepare(
       "INSERT INTO curation_logs (source_type, llm_name, content, created_at) VALUES (?, ?, ?, ?)"
     ).bind(sourceType, llmName, content, createdAt).run();
   } catch (error) {
-    console.error(`Failed to save to D1 for ${llmName}:`, error);
+    throw new OperationError({
+      stage: "d1_save",
+      provider: "d1",
+      errorCode: "write_failed"
+    });
   }
 }
 
-async function callGemini(apiKey) {
-  if (!apiKey) throw new Error("GEMINI_API_KEY is missing");
+async function callGemini(apiKey, runtime = {}) {
+  requireProviderSecret(apiKey, "gemini", "gemini");
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{
-        parts: [{
-          text: "現在(2026年8月)、世界のビジネス市場やテクノロジー全体（生成AI、SaaS、クラウド、サイバーセキュリティ、次世代インフラ、DX、組織マネジメント等）において最も狂気と変革をもたらしている最先端トレンドを1つ選定し、経営者や実務家の心を揺さぶる骨太な一次ドラフトを執筆してください。"
+  const data = await requestWithRetry({
+    provider: "gemini",
+    stage: "gemini",
+    url: endpoint,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: "現在(2026年8月)、世界のビジネス市場やテクノロジー全体（生成AI、SaaS、クラウド、サイバーセキュリティ、次世代インフラ、DX、組織マネジメント等）において最も狂気と変革をもたらしている最先端トレンドを1つ選定し、経営者や実務家の心を揺さぶる骨太な一次ドラフトを執筆してください。"
+          }]
         }]
-      }]
-    })
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const data = await response.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response";
+      })
+    },
+    consumeResponse: (response, signal) => parseJsonResponse(response, "gemini", "gemini", signal),
+    timeoutMs: runtime.timeouts?.gemini ?? EXTERNAL_API_TIMEOUTS.gemini,
+    maxAttempts: LLM_MAX_ATTEMPTS
+  }, runtime);
+  return requireResponseText(data.candidates?.[0]?.content?.parts?.[0]?.text, "gemini", "gemini");
 }
 
-async function callClaude(apiKey, draftText) {
-  if (!apiKey) throw new Error("CLAUDE_API_KEY is missing");
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+async function callClaude(apiKey, draftText, runtime = {}) {
+  requireProviderSecret(apiKey, "claude", "claude");
+  const data = await requestWithRetry({
+    provider: "claude",
+    stage: "claude",
+    url: "https://api.anthropic.com/v1/messages",
+    init: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -744,15 +943,21 @@ async function callClaude(apiKey, draftText) {
         content: `以下の一次ドラフトを基に、単なる表面的な要約ではなく、現場のビジネスパーソンが思わず唸るような「鋭い洞察」「組織が直面する生々しい課題」「他社に遅れを取ることの致命的なリスクと突破口」を交え、熱量のこもった重厚な文章へと深くリライト・推敲してください。\n\n【一次ドラフト】\n${draftText}`
       }]
     })
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const data = await response.json();
-  return data.content?.[0]?.text || "No response";
+    },
+    consumeResponse: (response, signal) => parseJsonResponse(response, "claude", "claude", signal),
+    timeoutMs: runtime.timeouts?.claude ?? EXTERNAL_API_TIMEOUTS.claude,
+    maxAttempts: LLM_MAX_ATTEMPTS
+  }, runtime);
+  return requireResponseText(data.content?.[0]?.text, "claude", "claude");
 }
 
-async function callOpenAI(apiKey, reviewedText) {
-  if (!apiKey) throw new Error("OPENAI_API_KEY is missing");
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+async function callOpenAI(apiKey, reviewedText, runtime = {}) {
+  requireProviderSecret(apiKey, "openai", "openai");
+  const data = await requestWithRetry({
+    provider: "openai",
+    stage: "openai",
+    url: "https://api.openai.com/v1/chat/completions",
+    init: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -766,10 +971,12 @@ async function callOpenAI(apiKey, reviewedText) {
       }],
       max_tokens: 1500
     })
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || "No response";
+    },
+    consumeResponse: (response, signal) => parseJsonResponse(response, "openai", "openai", signal),
+    timeoutMs: runtime.timeouts?.openai ?? EXTERNAL_API_TIMEOUTS.openai,
+    maxAttempts: LLM_MAX_ATTEMPTS
+  }, runtime);
+  return requireResponseText(data.choices?.[0]?.message?.content, "openai", "openai");
 }
 
 async function generateReport(env) {
@@ -780,26 +987,23 @@ async function generateReport(env) {
     const affiliateUrl = `https://www.amazon.co.jp/s?k=${encodedQuery}&tag=${tag}`;
     return `【自動定期レポート】\n本日のピックアップ情報：\n- **${sampleItem}**\n- 詳細・購入リンク: ${affiliateUrl}`;
   } catch (error) {
-    console.error("Report generation error:", error);
+    logOperationFailure(error, "report_generation", "worker");
     return "【自動定期レポート】\n本日の情報収集中に一時的なエラーが発生しましたが、システムは正常稼働を維持しています。";
   }
 }
 
-async function sendAutomatedReport(env) {
+async function sendAutomatedReport(env, runtime = {}) {
   const webhookUrl = env.DISCORD_WEBHOOK_URL;
   if (!webhookUrl) {
-    console.error("Discord Webhook URL is not configured.");
-    return;
+    throw new OperationError({
+      stage: "discord",
+      provider: "discord",
+      errorCode: "configuration_missing"
+    });
   }
   const content = await generateReport(env);
-  const response = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content })
-  });
-  if (!response.ok) {
-    console.error("Failed to send report to Discord:", await response.text());
-  }
+  await sendToDiscord(webhookUrl, content, runtime);
+  return content;
 }
 
 async function handleGetTask(request, env) {
