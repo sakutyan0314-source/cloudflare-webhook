@@ -22,6 +22,10 @@ const LLM_MAX_ATTEMPTS = 2;
 const DISCORD_MAX_ATTEMPTS = 3;
 const MAX_RETRY_AFTER_MS = 30_000;
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
+const PIPELINE_LEASE_MS = 15 * 60 * 1000;
+const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const ERROR_SUMMARY_MAX_LENGTH = 160;
 
 class OperationError extends Error {
   constructor({ stage, provider, errorCode, httpStatus = null, retryable = false, attempt = 1 }) {
@@ -79,7 +83,7 @@ if (articleMatch) {
     if (url.pathname === "/test-multillm") {
       const accessError = await authorizeOperationsRequest(request, env, "POST");
       if (accessError) return accessError;
-      return handleTestMultiLlm(env);
+      return handleTestMultiLlm(request, env);
     }
     if (url.pathname === "/view-logs") {
       const accessError = await authorizeOperationsRequest(request, env, "GET");
@@ -114,7 +118,7 @@ if (articleMatch) {
     return new Response("Not Found", { status: 404, headers: TEXT_HEADERS });
   },
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runScheduledPipeline(env));
+    ctx.waitUntil(runScheduledPipeline(env, {}, event.scheduledTime));
   }
 };
 
@@ -401,13 +405,30 @@ ${JSON.stringify({
     );
   }
 }
-async function handleTestMultiLlm(env) {
-  const timestamp = (new Date()).toISOString();
-  try {
-    const finalArticle = await runProConsensusPipeline(env);
-    await saveToD1(env.DB, "pro_consensus_summary", "Pro-Consensus Pipeline", finalArticle, timestamp);
+async function handleTestMultiLlm(request, env, runtime = {}) {
+  const rawKey = request.headers.get("Idempotency-Key");
+  const keyError = validateManualIdempotencyKey(rawKey);
+  if (keyError) {
     return new Response(
-      JSON.stringify({ status: "completed_deep_consensus", article: finalArticle }, null, 2),
+      JSON.stringify({ status: "error", message: keyError }),
+      { status: 400, headers: PRIVATE_JSON_HEADERS }
+    );
+  }
+
+  try {
+    const result = await runReliablePipeline(env, {
+      triggerType: "manual",
+      idempotencyKey: `manual:${rawKey}`,
+      scheduledFor: null,
+      sourceType: "pro_consensus_summary",
+      discordHeader: null
+    }, runtime);
+    return new Response(
+      JSON.stringify({
+        status: result.outcome,
+        pipelineRunId: result.runId,
+        articleId: result.articleId ?? null
+      }, null, 2),
       { headers: PRIVATE_JSON_HEADERS }
     );
   } catch (error) {
@@ -464,22 +485,319 @@ async function handleTestDiscord(env) {
   }
 }
 
-async function runScheduledPipeline(env, runtime = {}) {
+async function runScheduledPipeline(env, runtime = {}, scheduledTime = Date.now()) {
   console.log("Cron triggered: Running Deep Pro-Consensus pipeline...");
   try {
-    const finalArticle = await runProConsensusPipeline(env, runtime);
-    const timestamp = (new Date()).toISOString();
-    await saveToD1(env.DB, "cron_pro_consensus", "Pro-Consensus Pipeline", finalArticle, timestamp);
-    const message = buildDiscordMessage(
-      finalArticle,
-      timestamp,
-      env.AMAZON_TAG,
-      "🚀 **【自動速報配信（ビジネストレンド）】**"
-    );
-    await sendToDiscord(env.DISCORD_WEBHOOK_URL, message, runtime);
+    const normalizedScheduledTime = normalizeScheduledTime(scheduledTime);
+    return await runReliablePipeline(env, {
+      triggerType: "cron",
+      idempotencyKey: `cron:${normalizedScheduledTime.key}`,
+      scheduledFor: normalizedScheduledTime.iso,
+      sourceType: "cron_pro_consensus",
+      discordHeader: "🚀 **【自動速報配信（ビジネストレンド）】**"
+    }, runtime);
   } catch (error) {
     logOperationFailure(error, "scheduled_pipeline", "worker");
     throw normalizeOperationError(error, "scheduled_pipeline", "worker");
+  }
+}
+
+function validateManualIdempotencyKey(value) {
+  if (typeof value !== "string" || value.length === 0) return "Idempotency-Key is required";
+  if (value.trim() !== value || !IDEMPOTENCY_KEY_PATTERN.test(value)) {
+    return "Invalid Idempotency-Key";
+  }
+  if (value.length > IDEMPOTENCY_KEY_MAX_LENGTH) return "Invalid Idempotency-Key";
+  return null;
+}
+
+function normalizeScheduledTime(value) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    throw new OperationError({
+      stage: "pipeline_acquire",
+      provider: "worker",
+      errorCode: "invalid_scheduled_time"
+    });
+  }
+  const wholeMilliseconds = Math.trunc(milliseconds);
+  return {
+    key: String(wholeMilliseconds),
+    iso: new Date(wholeMilliseconds).toISOString()
+  };
+}
+
+function runtimeNow(runtime = {}) {
+  const value = runtime.now ? runtime.now() : new Date();
+  return value instanceof Date ? value : new Date(value);
+}
+
+function addMilliseconds(date, milliseconds) {
+  return new Date(date.getTime() + milliseconds).toISOString();
+}
+
+function createExecutionId(runtime = {}) {
+  if (runtime.randomUUID) return runtime.randomUUID();
+  return crypto.randomUUID();
+}
+
+function statementChanges(result) {
+  return Number(result?.meta?.changes ?? result?.changes ?? 0);
+}
+
+async function getPipelineRunByKey(db, idempotencyKey) {
+  return db.prepare(
+    "SELECT * FROM pipeline_runs WHERE idempotency_key = ? LIMIT 1"
+  ).bind(idempotencyKey).first();
+}
+
+async function getArticleForRun(db, runId) {
+  return db.prepare(
+    "SELECT id, content, created_at, pipeline_run_id FROM curation_logs WHERE pipeline_run_id = ? LIMIT 1"
+  ).bind(runId).first();
+}
+
+async function acquirePipelineRun(db, specification, runtime = {}) {
+  if (!db) {
+    throw new OperationError({
+      stage: "pipeline_acquire",
+      provider: "d1",
+      errorCode: "binding_missing"
+    });
+  }
+  const now = runtimeNow(runtime);
+  const nowIso = now.toISOString();
+  const executionId = createExecutionId(runtime);
+  const leaseExpiresAt = addMilliseconds(now, PIPELINE_LEASE_MS);
+
+  try {
+    await db.prepare(
+      `INSERT INTO pipeline_runs (
+        execution_id, idempotency_key, trigger_type, scheduled_for,
+        status, stage, attempt_count, notification_status,
+        lease_expires_at, started_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'running', 'gemini', 1, 'pending', ?, ?, ?)`
+    ).bind(
+      executionId,
+      specification.idempotencyKey,
+      specification.triggerType,
+      specification.scheduledFor,
+      leaseExpiresAt,
+      nowIso,
+      nowIso
+    ).run();
+  } catch {
+    // UNIQUE conflicts and ambiguous write results are resolved by reading the key.
+  }
+
+  const run = await getPipelineRunByKey(db, specification.idempotencyKey);
+  if (!run) {
+    throw new OperationError({
+      stage: "pipeline_acquire",
+      provider: "d1",
+      errorCode: "write_failed"
+    });
+  }
+  return { run, acquired: run.execution_id === executionId };
+}
+
+async function updateRunStage(db, runId, stage, runtime = {}) {
+  const now = runtimeNow(runtime);
+  await db.prepare(
+    "UPDATE pipeline_runs SET stage = ?, updated_at = ?, lease_expires_at = ? WHERE id = ? AND status = 'running'"
+  ).bind(stage, now.toISOString(), addMilliseconds(now, PIPELINE_LEASE_MS), runId).run();
+}
+
+function safeErrorSummary(error) {
+  const safe = normalizeOperationError(error, "pipeline", "worker");
+  return `${safe.provider}:${safe.errorCode}`.slice(0, ERROR_SUMMARY_MAX_LENGTH);
+}
+
+async function markPipelineFailed(db, runId, error, stage, runtime = {}) {
+  const safe = normalizeOperationError(error, stage, "worker");
+  const nowIso = runtimeNow(runtime).toISOString();
+  await db.prepare(
+    `UPDATE pipeline_runs
+     SET status = 'failed', stage = ?, error_code = ?, error_http_status = ?,
+         error_retryable = ?, error_summary = ?, updated_at = ?, failed_at = ?
+     WHERE id = ?`
+  ).bind(
+    stage,
+    safe.errorCode,
+    safe.httpStatus,
+    safe.retryable ? 1 : 0,
+    safeErrorSummary(safe),
+    nowIso,
+    nowIso,
+    runId
+  ).run();
+}
+
+async function saveArticleAndMarkSaved(db, run, specification, article, runtime = {}) {
+  const nowIso = runtimeNow(runtime).toISOString();
+  const insertStatement = db.prepare(
+    `INSERT INTO curation_logs
+      (source_type, llm_name, content, created_at, pipeline_run_id)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(
+    specification.sourceType,
+    "Pro-Consensus Pipeline",
+    article,
+    nowIso,
+    run.id
+  );
+  const updateStatement = db.prepare(
+    `UPDATE pipeline_runs
+     SET status = 'saved', stage = 'discord', notification_status = 'pending',
+         saved_at = ?, updated_at = ?
+     WHERE id = ? AND status = 'running'`
+  ).bind(nowIso, nowIso, run.id);
+
+  try {
+    if (typeof db.batch !== "function") {
+      throw new Error("D1 batch unavailable");
+    }
+    await db.batch([insertStatement, updateStatement]);
+  } catch {
+    const existingArticle = await getArticleForRun(db, run.id);
+    if (!existingArticle) {
+      throw new OperationError({
+        stage: "d1_save",
+        provider: "d1",
+        errorCode: "write_failed"
+      });
+    }
+  }
+
+  const savedArticle = await getArticleForRun(db, run.id);
+  if (!savedArticle) {
+    throw new OperationError({
+      stage: "d1_save",
+      provider: "d1",
+      errorCode: "ambiguous_write"
+    });
+  }
+  await db.prepare(
+    "UPDATE pipeline_runs SET article_id = ?, status = 'saved', stage = 'discord', updated_at = ? WHERE id = ?"
+  ).bind(savedArticle.id, nowIso, run.id).run();
+  return savedArticle;
+}
+
+async function claimNotification(db, runId, runtime = {}) {
+  const now = runtimeNow(runtime);
+  const result = await db.prepare(
+    `UPDATE pipeline_runs
+     SET notification_status = 'sending', notification_attempt_count = notification_attempt_count + 1,
+         updated_at = ?, lease_expires_at = ?
+     WHERE id = ? AND status = 'saved' AND notification_status IN ('pending', 'failed')`
+  ).bind(now.toISOString(), addMilliseconds(now, PIPELINE_LEASE_MS), runId).run();
+  return statementChanges(result) === 1;
+}
+
+async function sendSavedArticleNotification(env, run, article, specification, runtime = {}) {
+  const claimed = await claimNotification(env.DB, run.id, runtime);
+  if (!claimed) return { outcome: "duplicate", runId: run.id, articleId: article.id };
+
+  const message = buildDiscordMessage(
+    article.content,
+    article.created_at,
+    env.AMAZON_TAG,
+    specification.discordHeader || undefined
+  );
+  try {
+    await sendToDiscord(env.DISCORD_WEBHOOK_URL, message, runtime);
+    const nowIso = runtimeNow(runtime).toISOString();
+    await env.DB.prepare(
+      `UPDATE pipeline_runs
+       SET status = 'completed', stage = 'done', notification_status = 'sent',
+           notified_at = ?, completed_at = ?, updated_at = ?,
+           error_code = NULL, error_http_status = NULL, error_retryable = 0, error_summary = NULL
+       WHERE id = ? AND status = 'saved' AND notification_status = 'sending'`
+    ).bind(nowIso, nowIso, nowIso, run.id).run();
+    return { outcome: "completed", runId: run.id, articleId: article.id };
+  } catch (error) {
+    const safe = normalizeOperationError(error, "discord", "discord");
+    const nowIso = runtimeNow(runtime).toISOString();
+    await env.DB.prepare(
+      `UPDATE pipeline_runs
+       SET status = 'saved', stage = 'discord', notification_status = 'failed',
+           error_code = ?, error_http_status = ?, error_retryable = ?, error_summary = ?, updated_at = ?
+       WHERE id = ?`
+    ).bind(
+      safe.errorCode,
+      safe.httpStatus,
+      safe.retryable ? 1 : 0,
+      safeErrorSummary(safe),
+      nowIso,
+      run.id
+    ).run();
+    throw safe;
+  }
+}
+
+async function handleExistingPipelineRun(env, run, specification, runtime = {}) {
+  if (run.status === "completed" || run.status === "failed") {
+    return { outcome: run.status, runId: run.id, articleId: run.article_id ?? null };
+  }
+
+  const article = await getArticleForRun(env.DB, run.id);
+  if (article) {
+    if (run.notification_status === "sending") {
+      return { outcome: "notification_in_progress", runId: run.id, articleId: article.id };
+    }
+    if (run.status === "running") {
+      const nowIso = runtimeNow(runtime).toISOString();
+      await env.DB.prepare(
+        "UPDATE pipeline_runs SET status = 'saved', stage = 'discord', article_id = ?, saved_at = COALESCE(saved_at, ?), updated_at = ? WHERE id = ?"
+      ).bind(article.id, nowIso, nowIso, run.id).run();
+      run = await getPipelineRunByKey(env.DB, specification.idempotencyKey);
+    }
+    if (run.notification_status === "sent") {
+      return { outcome: "completed", runId: run.id, articleId: article.id };
+    }
+    if (run.notification_status === "sending") {
+      return { outcome: "notification_in_progress", runId: run.id, articleId: article.id };
+    }
+    return sendSavedArticleNotification(env, run, article, specification, runtime);
+  }
+
+  if (run.status === "running" && Date.parse(run.lease_expires_at) <= runtimeNow(runtime).getTime()) {
+    const staleError = new OperationError({
+      stage: run.stage,
+      provider: "worker",
+      errorCode: "stale_run_requires_reconciliation"
+    });
+    await markPipelineFailed(env.DB, run.id, staleError, run.stage, runtime);
+    return { outcome: "failed", runId: run.id, articleId: null };
+  }
+  return { outcome: "in_progress", runId: run.id, articleId: null };
+}
+
+async function runReliablePipeline(env, specification, runtime = {}) {
+  const acquisition = await acquirePipelineRun(env.DB, specification, runtime);
+  if (!acquisition.acquired) {
+    return handleExistingPipelineRun(env, acquisition.run, specification, runtime);
+  }
+
+  const run = acquisition.run;
+  let stage = "gemini";
+  try {
+    await updateRunStage(env.DB, run.id, "gemini", runtime);
+    const draft = await callGemini(env.GEMINI_API_KEY, runtime);
+    stage = "claude";
+    await updateRunStage(env.DB, run.id, stage, runtime);
+    const reviewed = await callClaude(env.CLAUDE_API_KEY, draft, runtime);
+    stage = "openai";
+    await updateRunStage(env.DB, run.id, stage, runtime);
+    const finalArticle = await callOpenAI(env.OPENAI_API_KEY, reviewed, runtime);
+    stage = "d1_save";
+    await updateRunStage(env.DB, run.id, stage, runtime);
+    const savedArticle = await saveArticleAndMarkSaved(env.DB, run, specification, finalArticle, runtime);
+    return await sendSavedArticleNotification(env, { ...run, status: "saved" }, savedArticle, specification, runtime);
+  } catch (error) {
+    const existingArticle = await getArticleForRun(env.DB, run.id);
+    if (!existingArticle) await markPipelineFailed(env.DB, run.id, error, stage, runtime);
+    throw normalizeOperationError(error, stage, stage === "d1_save" ? "d1" : stage);
   }
 }
 

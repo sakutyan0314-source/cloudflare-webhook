@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { PipelineD1Mock } from "./helpers/pipeline-d1-mock.mjs";
 
 const sourcePath = new URL("../src/index.ts", import.meta.url);
 const source = await fs.readFile(sourcePath, "utf8");
@@ -266,7 +267,7 @@ function pipelineRuntime(overrides = {}) {
   return { runtime, calls };
 }
 
-function pipelineEnv(db = dbMock()) {
+function pipelineEnv(db = new PipelineD1Mock()) {
   return {
     GEMINI_API_KEY: DUMMY_SECRET,
     CLAUDE_API_KEY: DUMMY_SECRET,
@@ -279,9 +280,9 @@ function pipelineEnv(db = dbMock()) {
 
 await test("Cron success saves before Discord", async () => {
   const { runtime, calls } = pipelineRuntime();
-  const db = dbMock();
+  const db = new PipelineD1Mock();
   await runScheduledPipeline(pipelineEnv(db), runtime);
-  assert.equal(db.state.writes, 1);
+  assert.equal(db.state.articles.length, 1);
   assert.equal(calls.filter((url) => url.includes("discord")).length, 1);
 });
 
@@ -308,7 +309,10 @@ for (const failedProvider of ["gemini", "claude", "openai", "discord"]) {
 
 await test("Cron D1 failure rejects and never calls Discord", async () => {
   const { runtime, calls } = pipelineRuntime();
-  await assert.rejects(runScheduledPipeline(pipelineEnv(dbMock({ fail: true })), runtime));
+  await assert.rejects(runScheduledPipeline(
+    pipelineEnv(new PipelineD1Mock({ failArticleInsert: true })),
+    runtime
+  ));
   assert.equal(calls.filter((url) => url.includes("discord")).length, 0);
 });
 
@@ -342,14 +346,17 @@ await test("/test-multillm returns 500 when D1 insert fails", async () => {
   try {
     const request = new Request("https://local.test/test-multillm", {
       method: "POST",
-      headers: { Authorization: `Bearer ${DUMMY_TOKEN}` }
+      headers: {
+        Authorization: `Bearer ${DUMMY_TOKEN}`,
+        "Idempotency-Key": "step1-d1-failure"
+      }
     });
     const result = await worker.fetch(request, {
       OPERATIONS_API_TOKEN: DUMMY_TOKEN,
       GEMINI_API_KEY: DUMMY_SECRET,
       CLAUDE_API_KEY: DUMMY_SECRET,
       OPENAI_API_KEY: DUMMY_SECRET,
-      DB: dbMock({ fail: true })
+      DB: new PipelineD1Mock({ failArticleInsert: true })
     }, {});
     assert.equal(result.status, 500);
     assert.deepEqual(await result.json(), { status: "error", message: "Operation failed" });
