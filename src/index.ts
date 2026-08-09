@@ -388,6 +388,9 @@ function renderHomePage(results, options) {
               <span>更新日時: ${escapeHtml(dateStr)}</span>
             </div>
             <div class="content">${escapeHtml(row.content)}</div>
+            <div class="read-more">
+              <a href="/article/${escapeHtml(String(row.id))}">続きを読む &rarr;</a>
+            </div>
             <div class="affiliate-box">
               🛒 厳選おすすめ関連アイテム（${escapeHtml(keyword)}）: <a href="${dynamicAffiliateUrl}" target="_blank" rel="nofollow">Amazonで最新商品をチェックする</a>
             </div>
@@ -400,6 +403,7 @@ function renderHomePage(results, options) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="google-site-verification" content="C2B44UChRSmhG5t80sCnRQg8q-sCGNQ84fBQPBJPzjk" />
   <title>テクノロジー＆ビジネストレンド最速まとめ速報</title>
   <meta name="description" content="AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。">
 <link rel="canonical" href="https://cloudflare-webhook.tyansaku3325.workers.dev/">
@@ -421,6 +425,9 @@ function renderHomePage(results, options) {
     .post:last-child { border-bottom: none; }
     .meta { font-size: 12px; color: #888; margin-bottom: 10px; display: flex; gap: 15px; align-items: center; }
     .content { font-size: 15px; line-height: 1.8; color: #222; margin-bottom: 15px; white-space: pre-line; }
+    .read-more { margin-bottom: 15px; }
+    .read-more a { color: #0070f3; text-decoration: none; font-size: 14px; font-weight: bold; }
+    .read-more a:hover { text-decoration: underline; }
     .affiliate-box { background: #fffbf0; border: 1px solid #ffeeba; padding: 12px 15px; border-radius: 6px; font-size: 13px; }
     .affiliate-box a { color: #b12704; text-decoration: none; font-weight: bold; }
     .affiliate-box a:hover { text-decoration: underline; }
