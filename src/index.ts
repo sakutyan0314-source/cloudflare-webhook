@@ -401,6 +401,18 @@ function renderHomePage(results, options) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>テクノロジー＆ビジネストレンド最速まとめ速報</title>
+  <meta name="description" content="AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。">
+<link rel="canonical" href="https://cloudflare-webhook.tyansaku3325.workers.dev/">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="テクノロジー＆ビジネストレンド最速まとめ速報">
+<meta property="og:description" content="AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。">
+<meta property="og:url" content="https://cloudflare-webhook.tyansaku3325.workers.dev/">
+<meta property="og:site_name" content="テクノロジー＆ビジネストレンド最速まとめ速報">
+
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="テクノロジー＆ビジネストレンド最速まとめ速報">
+<meta name="twitter:description" content="AI、SaaS、セキュリティ、次世代インフラなど、最新のテクノロジーとビジネストレンドを分析・整理してお届けする情報メディアです。">
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f7f9fa; color: #333; margin: 0; padding: 20px; }
     .container { max-width: 800px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
