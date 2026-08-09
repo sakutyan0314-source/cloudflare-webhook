@@ -1,9 +1,9 @@
-# Master Blueprint v1.0
+# Master Blueprint v1.1
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.0  
+**文書状態:** 正式基準文書 v1.1  
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -175,27 +175,26 @@
 - トップページSEOメタ情報
 - トップページから個別記事への内部リンク
 - 内部リンクに不要な `nofollow` がないこと
+- pagination/canonical整合性
+  - 本番記事数9件、総2ページ
+  - `/` HTTP 200、canonical `/`、`prev` なし、`next` `/?page=2`
+  - `/?page=2` HTTP 200、canonical `/?page=2`、`prev` `/`、最終ページのため `next` なし
+  - 範囲外の `/?page=3` HTTP 404
+  - 2ページ目のtitle、description、OGP、Twitter情報へページ番号を反映
+- pagination/canonical反映後も、Search Consoleタグ、内部リンク、Amazonリンク、個別記事、sitemap、robots、D1 binding、Cron設定が維持されたこと
 
-本番確認時のWorker Version IDは `d7f5f0f1-4090-493f-a0ce-db80dcf349d0`。これは履歴上の確認値であり、今後のデプロイで更新される。
+本番確認時のWorker Version IDは `93642267-ebbe-4398-af90-979687f71f0a`。これは履歴上の確認値であり、今後のデプロイで更新される。
 
 ### 6.2 Gitで確定済み
 
 - `main` → `origin/main` へpush済み
-- 基準コミット: `ff47f9bd2f3e6af029f9a1c422b7e3ae810be1b4`
-- コミットメッセージ: `Add Search Console verification and article internal links`
+- pagination/canonical基準コミット: `8298277c10db036f5e579175e0b26502be2b7cff`
+- コミットメッセージ: `Fix pagination canonical and navigation SEO`
 - 上記時点で `main` と `origin/main` は 0 ahead / 0 behind
 
 ### 6.3 実装済み・未コミット・本番未反映
 
-pagination/canonical整合性の変更が `src/index.ts` に存在する。
-
-- 1ページ目は `/` をcanonicalとする
-- 2ページ目以降は `/?page=N` を自己参照canonicalとする
-- `rel="prev"` と `rel="next"` を出力する
-- 2ページ目以降のtitle、description、OGPへページ番号を反映する
-- 総ページ数を超えるページはHTTP 404を返す
-- ローカルのD1モック検証とCloudflare向けdry-runは成功
-- 未コミット、未push、未デプロイ
+現時点で該当なし。
 
 ### 6.4 意図的に保持している未追跡ファイル
 
@@ -396,7 +395,7 @@ pagination/canonical整合性の変更が `src/index.ts` に存在する。
 
 ### Phase 1: 第1号メディアの安全な公開基盤
 
-1. pagination/canonical整合性を本番反映・検証・Git保存
+1. **完了:** pagination/canonical整合性を本番反映・検証・Git保存
 2. ベースURLを一元化
 3. 運用エンドポイントを認証し、状態変更をPOST限定
 4. D1スキーマ、マイグレーション、復旧手順を追加
@@ -457,15 +456,13 @@ pagination/canonical整合性の変更が `src/index.ts` に存在する。
 
 ## 13. 次の実行順序
 
-本設計図制定後の最優先作業は次のとおり。
+pagination/canonical工程完了後の優先作業は次のとおり。
 
-1. 現在のpagination/canonical差分を再レビュー
-2. ローカル検証結果と本設計図の安全基準を照合
-3. ユーザー承認後、正しい `wrangler.toml` でdry-runと本番デプロイ
-4. `/`、`/?page=2`、範囲外ページ、canonical、prev/nextを本番確認
-5. `src/index.ts` のみをcommitし、`main` → `origin/main` へ通常push
-6. 本設計図の状態台帳と変更履歴を更新
-7. 無認証の運用エンドポイント保護へ進む
+1. ベースURLを一元化し、canonical、OGP、sitemap、robotsで統一する
+2. 運用・テスト用エンドポイントを認証し、状態変更をPOST限定にする
+3. D1スキーマ、マイグレーション、復旧手順を追加する
+4. 保存失敗、外部API失敗、重複実行への対応を整備する
+5. 最低限の自動テスト、型、デプロイ手順を整備する
 
 ## 14. 意思決定ルール
 
@@ -560,6 +557,14 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 正式保存場所が確定するまでは、本ファイルを承認対象の原本として扱う。正式保存場所の決定後は、管理対象の原本を一つに定め、複製ファイルによる内容の分岐を防ぐ。
 
 ## 18. 変更履歴
+
+### v1.1 — 2026-08-09
+
+- pagination/canonical整合性を本番反映し、Worker Version ID `93642267-ebbe-4398-af90-979687f71f0a` で動作確認
+- `/` と `/?page=2` のcanonical、prev/next、ページ別SEO情報、および範囲外ページの404を本番確認
+- pagination/canonical変更をコミット `8298277c10db036f5e579175e0b26502be2b7cff` としてGit確定
+- Phase 1のpagination/canonical工程を完了扱いに更新
+- 次の正式作業をベースURLの一元化、その次を運用・テスト用エンドポイントの保護に更新
 
 ### v1.0 — 2026-08-09
 
