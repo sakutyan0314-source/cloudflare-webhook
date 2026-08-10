@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "purpose": "v1.9.1-A approved dry-run manifest for legacy SEO backfill",
+  "target_ids": [17, 20, 26],
+  "articles": [
+    {
+      "id": 17,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "98a2f9ae5904cb4246078018e017df6c40518ebe6f56f1a76c20f6ea22f81967"
+      },
+      "target": {
+        "title": "自律駆動型エンタープライズの時代—サバイバルへの挑戦",
+        "description": "自律駆動型エンタープライズの到来が企業経営に与える影響、現場の課題、AI主導の組織設計に向けた実務的な視点を整理します。",
+        "category": "ai-automation",
+        "published_at": "2026-08-02T23:02:06.682Z",
+        "seo_status": "ready"
+      }
+    },
+    {
+      "id": 20,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "ade901d428d51511c7eac18c8f43fb94f49dbaf3efdee95b600cb01e5cf00992"
+      },
+      "target": {
+        "title": "エージェンティック・シフト：ソフトウェアの死、組織の解体、そして「問いを持つ者」だけが生き残る時代へ",
+        "description": "エージェンティック・シフトがSaaSや組織運営をどう変えるのかを解説し、企業が再設計すべき意思決定と実行のあり方を考察します。",
+        "category": "saas-cloud",
+        "published_at": "2026-08-04T23:01:39.914Z",
+        "seo_status": "ready"
+      }
+    },
+    {
+      "id": 26,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "1f3c4be6b42dc1d4fa81b9322395cf7634285e9296ede98c69a537747af01b1b"
+      },
+      "target": {
+        "title": "オートメーションの頂点：Agentic Mesh（自律型エージェント網）が変革するビジネス環境と企業の未来",
+        "description": "Agentic Meshが企業運営と意思決定をどう変えるかを整理し、導入時に向き合う課題と変革の視点を企業の実務に向けて解説します。",
+        "category": "ai-automation",
+        "published_at": "2026-08-09T20:40:17.892Z",
+        "seo_status": "ready"
+      }
+    }
+  ]
+}

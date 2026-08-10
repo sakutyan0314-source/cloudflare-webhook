@@ -411,3 +411,25 @@ restore前に必ず現在状態をexportし、失われる時間範囲と書き�
 ### 22.4 本番反映順序
 
 `0003_pipeline_reconciliation_audit.sql`は監査テーブルとINDEXだけを追加するadditive migrationである。既存runと記事は変更しない。ただしremote applyは本番変更のため、既存の事前read、bookmark、export、fingerprint、創業者承認をすべて完了してから行う。migration適用前のWorkerへ新コードをdeployしてはならない。適用後も状態変更POSTを本番確認目的で実行せず、まず認証・405・読み取り一覧・公開経路を確認する。
+
+## 23. v1.9.1 SEO legacy backfill dry-run
+
+`ops/v1.9.1-seo-ready-manifest.json`は、ID 17 / 20 / 26だけを対象にした正式承認manifestである。対象ID、本文SHA-256、承認済みSEO値を含むため、変更には創業者の再承認を必要とする。
+
+dry-runは`SELECT`専用であり、D1の更新系メソッド、DML、DDL、pipeline、Discord、reconciliationを呼び出してはならない。`--effective-at`は必須の固定ISO UTC時刻であり、後続の承認済み本番backfillでも同じ値を使用する。本番実行時に再採番してはならない。
+
+```bash
+node scripts/v1.9.1-seo-backfill-dry-run.mjs \
+  --effective-at <approved-iso-utc> \
+  --audit-dir /Users/hashimotoyuma/D1_BACKUPS/v1.9.1-backfill
+```
+
+このコマンドは本番D1に静的な`SELECT`だけを実行し、次を確認する。
+
+- 3対象IDの存在と、manifest外IDが結果にないこと
+- `seo_status='legacy'`、`category='uncategorized'`、SEOカラム未設定
+- `content` SHA-256、`created_at`、許可category、title、description、本文長、H2構造
+- 予定`body_markdown`のSHA-256が`content`と一致すること
+- D1メタデータが`changed_db=false`かつ`rows_written=0`であること
+
+実行時はmanifestの完全コピーとSHA-256、本文を含まないdry-run監査JSONとSHA-256を、Git管理外の`--audit-dir`へ権限600で保存する。監査ディレクトリにプロジェクト内のパスを指定してはならない。dry-runが1件でも不合格なら、更新処理を実装・実行せず停止する。
