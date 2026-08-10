@@ -23,6 +23,11 @@ const DISCORD_MAX_ATTEMPTS = 3;
 const MAX_RETRY_AFTER_MS = 30_000;
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
 const PIPELINE_LEASE_MS = 15 * 60 * 1000;
+const PIPELINE_DEADLINE_MS = 8 * 60 * 1000;
+const MANUAL_HOURLY_LIMIT = 1;
+const MANUAL_DAILY_LIMIT = 2;
+const CRON_DAILY_LIMIT = 1;
+const GLOBAL_DAILY_LIMIT = 3;
 const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ERROR_SUMMARY_MAX_LENGTH = 160;
@@ -433,9 +438,21 @@ async function handleTestMultiLlm(request, env, runtime = {}) {
     );
   } catch (error) {
     logOperationFailure(error, "test_multillm", "worker");
+    const safe = normalizeOperationError(error, "test_multillm", "worker");
+    const status = safe.errorCode === "pipeline_limit_exceeded"
+      ? 429
+      : safe.errorCode === "pipeline_deadline_exceeded"
+        ? 504
+        : safe.stage === "pipeline_acquire"
+          ? 503
+          : 500;
+    const headers = { ...PRIVATE_JSON_HEADERS };
+    if (status === 429 && Number.isFinite(safe.retryAfterSeconds)) {
+      headers["Retry-After"] = String(Math.max(1, Math.ceil(safe.retryAfterSeconds)));
+    }
     return new Response(JSON.stringify({ status: "error", message: "Operation failed" }, null, 2), {
-      status: 500,
-      headers: PRIVATE_JSON_HEADERS
+      status,
+      headers
     });
   }
 }
@@ -536,6 +553,34 @@ function addMilliseconds(date, milliseconds) {
   return new Date(date.getTime() + milliseconds).toISOString();
 }
 
+function utcDayBounds(date) {
+  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
+}
+
+function pipelineDeadlineRuntime(runtime, startedAt) {
+  const deadlineAt = Date.parse(startedAt) + PIPELINE_DEADLINE_MS;
+  return { ...runtime, deadlineAt };
+}
+
+function deadlineRemainingMs(runtime) {
+  if (!Number.isFinite(runtime.deadlineAt)) return Infinity;
+  return runtime.deadlineAt - runtimeNow(runtime).getTime();
+}
+
+function pipelineDeadlineError(stage, provider = "worker") {
+  return new OperationError({
+    stage,
+    provider,
+    errorCode: "pipeline_deadline_exceeded",
+    retryable: false
+  });
+}
+
+function assertPipelineDeadline(runtime, stage, provider = "worker") {
+  if (deadlineRemainingMs(runtime) <= 0) throw pipelineDeadlineError(stage, provider);
+}
+
 function createExecutionId(runtime = {}) {
   if (runtime.randomUUID) return runtime.randomUUID();
   return crypto.randomUUID();
@@ -570,13 +615,41 @@ async function acquirePipelineRun(db, specification, runtime = {}) {
   const executionId = createExecutionId(runtime);
   const leaseExpiresAt = addMilliseconds(now, PIPELINE_LEASE_MS);
 
+  let existing;
   try {
-    await db.prepare(
+    existing = await getPipelineRunByKey(db, specification.idempotencyKey);
+  } catch {
+    throw new OperationError({
+      stage: "pipeline_acquire",
+      provider: "d1",
+      errorCode: "budget_check_failed",
+      retryable: true
+    });
+  }
+  if (existing) return { run: existing, acquired: false };
+
+  const day = utcDayBounds(now);
+  const hourStart = new Date(now.getTime() - 60 * 60 * 1000);
+  let insertResult;
+
+  try {
+    insertResult = await db.prepare(
       `INSERT INTO pipeline_runs (
         execution_id, idempotency_key, trigger_type, scheduled_for,
         status, stage, attempt_count, notification_status,
         lease_expires_at, started_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'running', 'gemini', 1, 'pending', ?, ?, ?)`
+      )
+      SELECT ?, ?, ?, ?, 'running', 'gemini', 1, 'pending', ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM pipeline_runs WHERE started_at >= ? AND started_at < ?) < ?
+        AND (
+          (? = 'manual'
+            AND (SELECT COUNT(*) FROM pipeline_runs WHERE trigger_type = 'manual' AND status IN ('running', 'saved')) < 1
+            AND (SELECT COUNT(*) FROM pipeline_runs WHERE trigger_type = 'manual' AND started_at > ? AND started_at <= ?) < ?
+            AND (SELECT COUNT(*) FROM pipeline_runs WHERE trigger_type = 'manual' AND started_at >= ? AND started_at < ?) < ?)
+          OR
+          (? = 'cron'
+            AND (SELECT COUNT(*) FROM pipeline_runs WHERE trigger_type = 'cron' AND started_at >= ? AND started_at < ?) < ?)
+        )`
     ).bind(
       executionId,
       specification.idempotencyKey,
@@ -584,14 +657,78 @@ async function acquirePipelineRun(db, specification, runtime = {}) {
       specification.scheduledFor,
       leaseExpiresAt,
       nowIso,
-      nowIso
+      nowIso,
+      day.start.toISOString(),
+      day.end.toISOString(),
+      GLOBAL_DAILY_LIMIT,
+      specification.triggerType,
+      hourStart.toISOString(),
+      nowIso,
+      MANUAL_HOURLY_LIMIT,
+      day.start.toISOString(),
+      day.end.toISOString(),
+      MANUAL_DAILY_LIMIT,
+      specification.triggerType,
+      day.start.toISOString(),
+      day.end.toISOString(),
+      CRON_DAILY_LIMIT
     ).run();
   } catch {
     // UNIQUE conflicts and ambiguous write results are resolved by reading the key.
   }
 
-  const run = await getPipelineRunByKey(db, specification.idempotencyKey);
+  let run;
+  try {
+    run = await getPipelineRunByKey(db, specification.idempotencyKey);
+  } catch {
+    throw new OperationError({
+      stage: "pipeline_acquire",
+      provider: "d1",
+      errorCode: "budget_check_failed",
+      retryable: true
+    });
+  }
   if (!run) {
+    if (insertResult && statementChanges(insertResult) === 0) {
+      let limitState;
+      try {
+        limitState = await db.prepare(
+          `SELECT
+            (SELECT COUNT(*) FROM pipeline_runs WHERE started_at >= ? AND started_at < ?) AS daily_total,
+            (SELECT COUNT(*) FROM pipeline_runs WHERE trigger_type = 'manual' AND status IN ('running', 'saved')) AS active_manual,
+            (SELECT COUNT(*) FROM pipeline_runs WHERE trigger_type = 'manual' AND started_at > ? AND started_at <= ?) AS hourly_manual,
+            (SELECT COUNT(*) FROM pipeline_runs WHERE trigger_type = 'manual' AND started_at >= ? AND started_at < ?) AS daily_manual,
+            (SELECT COUNT(*) FROM pipeline_runs WHERE trigger_type = 'cron' AND started_at >= ? AND started_at < ?) AS daily_cron,
+            (SELECT MIN(started_at) FROM pipeline_runs WHERE trigger_type = 'manual' AND started_at > ? AND started_at <= ?) AS oldest_hourly_manual`
+        ).bind(
+          day.start.toISOString(), day.end.toISOString(),
+          hourStart.toISOString(), nowIso,
+          day.start.toISOString(), day.end.toISOString(),
+          day.start.toISOString(), day.end.toISOString(),
+          hourStart.toISOString(), nowIso
+        ).first();
+      } catch {
+        throw new OperationError({
+          stage: "pipeline_acquire",
+          provider: "d1",
+          errorCode: "budget_check_failed",
+          retryable: true
+        });
+      }
+      const limitError = new OperationError({
+        stage: "pipeline_acquire",
+        provider: "worker",
+        errorCode: "pipeline_limit_exceeded"
+      });
+      const dayRetry = Math.ceil((day.end.getTime() - now.getTime()) / 1000);
+      const hourlyRetry = limitState?.oldest_hourly_manual
+        ? Math.ceil((Date.parse(limitState.oldest_hourly_manual) + 60 * 60 * 1000 - now.getTime()) / 1000)
+        : 60 * 60;
+      limitError.retryAfterSeconds = specification.triggerType === "manual" && Number(limitState?.hourly_manual) >= MANUAL_HOURLY_LIMIT
+        ? Math.max(1, hourlyRetry)
+        : Math.max(1, dayRetry);
+      throw limitError;
+    }
     throw new OperationError({
       stage: "pipeline_acquire",
       provider: "d1",
@@ -602,6 +739,7 @@ async function acquirePipelineRun(db, specification, runtime = {}) {
 }
 
 async function updateRunStage(db, runId, stage, runtime = {}) {
+  assertPipelineDeadline(runtime, stage);
   const now = runtimeNow(runtime);
   await db.prepare(
     "UPDATE pipeline_runs SET stage = ?, updated_at = ?, lease_expires_at = ? WHERE id = ? AND status = 'running'"
@@ -695,6 +833,7 @@ async function claimNotification(db, runId, runtime = {}) {
 }
 
 async function sendSavedArticleNotification(env, run, article, specification, runtime = {}) {
+  assertPipelineDeadline(runtime, "discord", "discord");
   const claimed = await claimNotification(env.DB, run.id, runtime);
   if (!claimed) return { outcome: "duplicate", runId: run.id, articleId: article.id };
 
@@ -718,6 +857,15 @@ async function sendSavedArticleNotification(env, run, article, specification, ru
   } catch (error) {
     const safe = normalizeOperationError(error, "discord", "discord");
     const nowIso = runtimeNow(runtime).toISOString();
+    if (safe.deliveryUnknown) {
+      await env.DB.prepare(
+        `UPDATE pipeline_runs
+         SET status = 'saved', stage = 'discord', notification_status = 'sending',
+             error_code = ?, error_http_status = ?, error_retryable = 0, error_summary = ?, updated_at = ?
+         WHERE id = ?`
+      ).bind(safe.errorCode, safe.httpStatus, safeErrorSummary(safe), nowIso, run.id).run();
+      throw safe;
+    }
     await env.DB.prepare(
       `UPDATE pipeline_runs
        SET status = 'saved', stage = 'discord', notification_status = 'failed',
@@ -775,28 +923,30 @@ async function handleExistingPipelineRun(env, run, specification, runtime = {}) 
 
 async function runReliablePipeline(env, specification, runtime = {}) {
   const acquisition = await acquirePipelineRun(env.DB, specification, runtime);
+  const pipelineRuntime = pipelineDeadlineRuntime(runtime, acquisition.run.started_at);
   if (!acquisition.acquired) {
-    return handleExistingPipelineRun(env, acquisition.run, specification, runtime);
+    return handleExistingPipelineRun(env, acquisition.run, specification, pipelineRuntime);
   }
 
   const run = acquisition.run;
   let stage = "gemini";
   try {
-    await updateRunStage(env.DB, run.id, "gemini", runtime);
-    const draft = await callGemini(env.GEMINI_API_KEY, runtime);
+    await updateRunStage(env.DB, run.id, "gemini", pipelineRuntime);
+    const draft = await callGemini(env.GEMINI_API_KEY, pipelineRuntime);
     stage = "claude";
-    await updateRunStage(env.DB, run.id, stage, runtime);
-    const reviewed = await callClaude(env.CLAUDE_API_KEY, draft, runtime);
+    await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
+    const reviewed = await callClaude(env.CLAUDE_API_KEY, draft, pipelineRuntime);
     stage = "openai";
-    await updateRunStage(env.DB, run.id, stage, runtime);
-    const finalArticle = await callOpenAI(env.OPENAI_API_KEY, reviewed, runtime);
+    await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
+    const finalArticle = await callOpenAI(env.OPENAI_API_KEY, reviewed, pipelineRuntime);
     stage = "d1_save";
-    await updateRunStage(env.DB, run.id, stage, runtime);
-    const savedArticle = await saveArticleAndMarkSaved(env.DB, run, specification, finalArticle, runtime);
-    return await sendSavedArticleNotification(env, { ...run, status: "saved" }, savedArticle, specification, runtime);
+    await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
+    const savedArticle = await saveArticleAndMarkSaved(env.DB, run, specification, finalArticle, pipelineRuntime);
+    assertPipelineDeadline(pipelineRuntime, "discord", "discord");
+    return await sendSavedArticleNotification(env, { ...run, status: "saved" }, savedArticle, specification, pipelineRuntime);
   } catch (error) {
     const existingArticle = await getArticleForRun(env.DB, run.id);
-    if (!existingArticle) await markPipelineFailed(env.DB, run.id, error, stage, runtime);
+    if (!existingArticle) await markPipelineFailed(env.DB, run.id, error, stage, pipelineRuntime);
     throw normalizeOperationError(error, stage, stage === "d1_save" ? "d1" : stage);
   }
 }
@@ -1115,8 +1265,11 @@ async function requestWithRetry(options, runtime = {}) {
   const sleep = runtime.sleep ?? defaultSleep;
 
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    assertPipelineDeadline(runtime, options.stage, options.provider);
+    const remainingMs = deadlineRemainingMs(runtime);
+    const effectiveTimeoutMs = Math.max(1, Math.min(options.timeoutMs, remainingMs));
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), effectiveTimeoutMs);
     let operationError;
 
     try {
@@ -1153,15 +1306,32 @@ async function requestWithRetry(options, runtime = {}) {
           retryable: true,
           attempt
         });
+      if (controller.signal.aborted && remainingMs <= options.timeoutMs) {
+        operationError = pipelineDeadlineError(options.stage, options.provider);
+      }
     } finally {
       clearTimeout(timer);
     }
 
     if (!operationError.retryable || attempt >= options.maxAttempts) {
+      if (options.deliveryUnknownOnTransportFailure && ["timeout", "network_error", "pipeline_deadline_exceeded"].includes(operationError.errorCode)) {
+        operationError.deliveryUnknown = true;
+        operationError.retryable = false;
+      }
       throw operationError;
     }
 
-    await sleep(retryDelayMs(operationError, attempt, runtime));
+    if (options.deliveryUnknownOnTransportFailure && ["timeout", "network_error"].includes(operationError.errorCode)) {
+      operationError.deliveryUnknown = true;
+      operationError.retryable = false;
+      throw operationError;
+    }
+    const delayMs = retryDelayMs(operationError, attempt, runtime);
+    if (delayMs >= deadlineRemainingMs(runtime)) {
+      throw pipelineDeadlineError(options.stage, options.provider);
+    }
+    await sleep(delayMs);
+    assertPipelineDeadline(runtime, options.stage, options.provider);
   }
 
   throw new OperationError({
@@ -1189,7 +1359,8 @@ async function sendToDiscord(webhookUrl, content, runtime = {}) {
       body: JSON.stringify({ content })
     },
     timeoutMs: runtime.timeouts?.discord ?? EXTERNAL_API_TIMEOUTS.discord,
-    maxAttempts: DISCORD_MAX_ATTEMPTS
+    maxAttempts: DISCORD_MAX_ATTEMPTS,
+    deliveryUnknownOnTransportFailure: true
   }, runtime);
   return "Message sent successfully to Discord.";
 }

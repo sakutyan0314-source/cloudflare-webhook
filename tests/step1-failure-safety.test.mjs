@@ -177,7 +177,7 @@ await test("Discord 204 succeeds", async () => {
   assert.equal(calls, 1);
 });
 
-for (const scenario of ["429", "500", "network", "timeout"]) {
+for (const scenario of ["429", "500"]) {
   await test(`Discord ${scenario} retries then succeeds`, async () => {
     let calls = 0;
     const runtime = runtimeWith((url, init) => {
@@ -192,6 +192,25 @@ for (const scenario of ["429", "500", "network", "timeout"]) {
     }, 1);
     await sendToDiscord(DUMMY_WEBHOOK, "content", runtime);
     assert.equal(calls, 2);
+  });
+}
+
+for (const scenario of ["network", "timeout"]) {
+  await test(`Discord ${scenario} is not retried because delivery is unknown`, async () => {
+    let calls = 0;
+    const runtime = runtimeWith((url, init) => {
+      calls += 1;
+      if (scenario === "network") return Promise.reject(new Error("network"));
+      return new Promise((resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }, 1);
+    await expectOperationError(sendToDiscord(DUMMY_WEBHOOK, "content", runtime), {
+      provider: "discord",
+      retryable: false,
+      attempt: 1
+    });
+    assert.equal(calls, 1);
   });
 }
 

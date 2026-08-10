@@ -24,6 +24,7 @@ export class PipelineD1Mock {
     try {
       const results = [];
       for (const statement of statements) results.push(await statement.run());
+      if (this.options.afterBatch) await this.options.afterBatch();
       if (this.options.ambiguousBatchCommit) throw new Error("ambiguous after commit");
       return results;
     } catch (error) {
@@ -97,6 +98,28 @@ class StatementMock {
     if (this.sql.includes("FROM curation_logs WHERE pipeline_run_id")) {
       return this.db.state.articles.find((article) => article.pipeline_run_id === this.args[0]) ?? null;
     }
+    if (this.sql.startsWith("SELECT (SELECT COUNT(*) FROM pipeline_runs")) {
+      if (this.db.options.failBudgetQuery) throw new Error("budget query failed");
+      const [dayStart, dayEnd, hourStart, now] = this.args;
+      const inRange = (value, start, end) => value >= start && value < end;
+      const manualHourly = this.db.state.pipelineRuns.filter((run) =>
+        run.trigger_type === "manual" && run.started_at > hourStart && run.started_at <= now
+      );
+      return {
+        daily_total: this.db.state.pipelineRuns.filter((run) => inRange(run.started_at, dayStart, dayEnd)).length,
+        active_manual: this.db.state.pipelineRuns.filter((run) =>
+          run.trigger_type === "manual" && ["running", "saved"].includes(run.status)
+        ).length,
+        hourly_manual: manualHourly.length,
+        daily_manual: this.db.state.pipelineRuns.filter((run) =>
+          run.trigger_type === "manual" && inRange(run.started_at, this.args[4], this.args[5])
+        ).length,
+        daily_cron: this.db.state.pipelineRuns.filter((run) =>
+          run.trigger_type === "cron" && inRange(run.started_at, this.args[6], this.args[7])
+        ).length,
+        oldest_hourly_manual: manualHourly.map((run) => run.started_at).sort()[0] ?? null
+      };
+    }
     return null;
   }
 
@@ -110,6 +133,30 @@ class StatementMock {
       const [executionId, key, triggerType, scheduledFor, lease, started, updated] = this.args;
       if (state.pipelineRuns.some((run) => run.execution_id === executionId || run.idempotency_key === key)) {
         throw new Error("UNIQUE pipeline run");
+      }
+      if (this.sql.includes("SELECT ?, ?, ?, ?") && options.failConditionalInsert) {
+        throw new Error("conditional insert failed");
+      }
+      if (this.sql.includes("SELECT ?, ?, ?, ?")) {
+        const inRange = (value, start, end) => value >= start && value < end;
+        const dailyTotal = state.pipelineRuns.filter((run) => inRange(run.started_at, this.args[7], this.args[8])).length;
+        const activeManual = state.pipelineRuns.filter((run) =>
+          run.trigger_type === "manual" && ["running", "saved"].includes(run.status)
+        ).length;
+        const hourlyManual = state.pipelineRuns.filter((run) =>
+          run.trigger_type === "manual" && run.started_at > this.args[11] && run.started_at <= this.args[12]
+        ).length;
+        const dailyManual = state.pipelineRuns.filter((run) =>
+          run.trigger_type === "manual" && inRange(run.started_at, this.args[14], this.args[15])
+        ).length;
+        const dailyCron = state.pipelineRuns.filter((run) =>
+          run.trigger_type === "cron" && inRange(run.started_at, this.args[18], this.args[19])
+        ).length;
+        const allowed = dailyTotal < this.args[9] && (
+          (triggerType === "manual" && activeManual < 1 && hourlyManual < this.args[13] && dailyManual < this.args[16]) ||
+          (triggerType === "cron" && dailyCron < this.args[20])
+        );
+        if (!allowed) return { meta: { changes: 0 } };
       }
       const run = this.db.seedRun({
         execution_id: executionId,
@@ -192,6 +239,14 @@ class StatementMock {
       run.status = "saved";
       run.stage = "discord";
       run.notification_status = "failed";
+      return { meta: { changes: 1 } };
+    }
+    if (this.sql.includes("notification_status = 'sending'") && this.sql.includes("error_code = ?")) {
+      [run.error_code, run.error_http_status, run.error_summary, run.updated_at] = this.args;
+      run.status = "saved";
+      run.stage = "discord";
+      run.notification_status = "sending";
+      run.error_retryable = 0;
       return { meta: { changes: 1 } };
     }
     if (this.sql.includes("saved_at = COALESCE")) {

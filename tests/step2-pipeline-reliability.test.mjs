@@ -9,6 +9,8 @@ import { PipelineD1Mock } from "./helpers/pipeline-d1-mock.mjs";
 const source = await fs.readFile(new URL("../src/index.ts", import.meta.url), "utf8");
 const exportedSource = `${source}\nexport {
   acquirePipelineRun,
+  callGemini,
+  handleTestMultiLlm,
   handleExistingPipelineRun,
   normalizeScheduledTime,
   runReliablePipeline,
@@ -19,6 +21,8 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(exportedSource).toS
 const workerModule = await import(moduleUrl);
 const {
   acquirePipelineRun,
+  callGemini,
+  handleTestMultiLlm,
   handleExistingPipelineRun,
   normalizeScheduledTime,
   runReliablePipeline,
@@ -207,13 +211,17 @@ await test("same Cron scheduledTime running concurrently executes only once", as
   assert.deepEqual(new Set([first.outcome, second.outcome]), new Set(["completed", "in_progress"]));
 });
 
-await test("different Cron scheduledTime values create separate runs", async () => {
+await test("Cron scheduledTime values on different UTC days create separate runs", async () => {
   const harness = createHarness();
   await runScheduledPipeline(harness.env, harness.runtime, 1786320000000);
-  await runScheduledPipeline(harness.env, harness.runtime, 1786320060000);
+  const nextDay = 1786320000000 + (24 * 60 * 60 * 1000);
+  const nextDayHarness = createHarness({ db: harness.db, now: new Date(FIXED_DATE.getTime() + (24 * 60 * 60 * 1000)) });
+  nextDayHarness.runtime.randomUUID = () => "next-day-execution";
+  await runScheduledPipeline(nextDayHarness.env, nextDayHarness.runtime, nextDay);
   assert.equal(harness.db.state.pipelineRuns.length, 2);
   assert.equal(harness.db.state.articles.length, 2);
-  assert.equal(harness.calls.filter((url) => url.includes("googleapis")).length, 2);
+  assert.equal(harness.calls.filter((url) => url.includes("googleapis")).length, 1);
+  assert.equal(nextDayHarness.calls.filter((url) => url.includes("googleapis")).length, 1);
 });
 
 await test("same manual key does not run LLM twice", async () => {
@@ -410,6 +418,195 @@ await test("operations authentication and method checks still run before idempot
     headers: { "Idempotency-Key": "valid" }
   }), { OPERATIONS_API_TOKEN: DUMMY_TOKEN }, {});
   assert.equal(unauthorized.status, 401);
+});
+
+await test("pipeline completes normally inside the eight minute deadline", async () => {
+  const harness = createHarness();
+  const result = await runReliablePipeline(harness.env, manualSpecification("deadline-normal"), harness.runtime);
+  assert.equal(result.outcome, "completed");
+  assert.equal(harness.db.state.pipelineRuns[0].status, "completed");
+});
+
+await test("global deadline aborts Gemini and leaves no article or Discord call", async () => {
+  const harness = createHarness();
+  let current = new Date(FIXED_DATE);
+  harness.runtime.now = () => current;
+  harness.runtime.fetch = async (url, init) => {
+    harness.calls.push(url);
+    current = new Date(FIXED_DATE.getTime() + (8 * 60 * 1000) - 2);
+    return new Promise((resolve, reject) => {
+      init.signal.addEventListener("abort", () => {
+        current = new Date(FIXED_DATE.getTime() + (8 * 60 * 1000));
+        reject(new Error("aborted"));
+      }, { once: true });
+    });
+  };
+  await assert.rejects(
+    runReliablePipeline(harness.env, manualSpecification("deadline-gemini"), harness.runtime),
+    (error) => error.errorCode === "pipeline_deadline_exceeded"
+  );
+  assert.equal(harness.db.state.pipelineRuns[0].status, "failed");
+  assert.equal(harness.db.state.pipelineRuns[0].error_code, "pipeline_deadline_exceeded");
+  assert.equal(harness.db.state.articles.length, 0);
+  assert.equal(harness.calls.some((url) => url.includes("discord")), false);
+});
+
+await test("global remaining time shorter than stage timeout aborts the active fetch", async () => {
+  let aborted = false;
+  const start = new Date();
+  await assert.rejects(callGemini(DUMMY_SECRET, {
+    now: () => new Date(),
+    deadlineAt: start.getTime() + 5,
+    timeouts: { gemini: 45_000 },
+    fetch: async (url, init) => new Promise((resolve, reject) => {
+      init.signal.addEventListener("abort", () => {
+        aborted = true;
+        reject(new Error("aborted"));
+      }, { once: true });
+    })
+  }), (error) => error.errorCode === "pipeline_deadline_exceeded");
+  assert.equal(aborted, true);
+});
+
+await test("retry wait that would cross the global deadline is not started", async () => {
+  let calls = 0;
+  let sleeps = 0;
+  const now = new Date("2026-08-10T00:00:00.000Z");
+  await assert.rejects(callGemini(DUMMY_SECRET, {
+    now: () => now,
+    deadlineAt: now.getTime() + 100,
+    random: () => 0,
+    sleep: async () => { sleeps += 1; },
+    fetch: async () => {
+      calls += 1;
+      return response(500);
+    }
+  }), (error) => error.errorCode === "pipeline_deadline_exceeded");
+  assert.equal(calls, 1);
+  assert.equal(sleeps, 0);
+});
+
+await test("deadline after article save preserves pending article and skips Discord", async () => {
+  let current = new Date(FIXED_DATE);
+  const db = new PipelineD1Mock({
+    afterBatch: async () => { current = new Date(FIXED_DATE.getTime() + (8 * 60 * 1000)); }
+  });
+  const harness = createHarness({ db });
+  harness.runtime.now = () => current;
+  await assert.rejects(
+    runReliablePipeline(harness.env, manualSpecification("deadline-after-save"), harness.runtime),
+    (error) => error.errorCode === "pipeline_deadline_exceeded"
+  );
+  assert.equal(db.state.articles.length, 1);
+  assert.equal(db.state.pipelineRuns[0].status, "saved");
+  assert.equal(db.state.pipelineRuns[0].notification_status, "pending");
+  assert.equal(harness.calls.some((url) => url.includes("discord")), false);
+});
+
+await test("manual active, rolling hour, and UTC daily limits reject without side effects", async () => {
+  for (const seed of [
+    { status: "running", started_at: "2026-08-09T22:00:00.000Z" },
+    { status: "completed", started_at: "2026-08-09T23:30:00.000Z" },
+    [
+      { status: "completed", started_at: "2026-08-09T01:00:00.000Z" },
+      { status: "failed", started_at: "2026-08-09T02:00:00.000Z" }
+    ]
+  ]) {
+    const db = new PipelineD1Mock();
+    for (const values of Array.isArray(seed) ? seed : [seed]) db.seedRun({ ...values, trigger_type: "manual" });
+    const harness = createHarness({ db, now: new Date("2026-08-09T23:45:00.000Z") });
+    const before = db.state.pipelineRuns.length;
+    const responseResult = await handleTestMultiLlm(new Request("https://local.test/test-multillm", {
+      method: "POST", headers: { "Idempotency-Key": `limit-${before}` }
+    }), harness.env, harness.runtime);
+    assert.equal(responseResult.status, 429);
+    assert.ok(Number(responseResult.headers.get("Retry-After")) > 0);
+    assert.equal(responseResult.headers.get("Cache-Control"), "no-store");
+    assert.equal(db.state.pipelineRuns.length, before);
+    assert.equal(harness.calls.length, 0);
+    assert.equal(db.state.articles.length, 0);
+  }
+});
+
+await test("same Cron key remains idempotent while a second same-day Cron key is rejected", async () => {
+  const harness = createHarness();
+  const first = await runScheduledPipeline(harness.env, harness.runtime, 1786320000000);
+  const repeated = await runScheduledPipeline(harness.env, harness.runtime, 1786320000000);
+  assert.equal(repeated.outcome, first.outcome);
+  await assert.rejects(
+    runScheduledPipeline(harness.env, harness.runtime, 1786320060000),
+    (error) => error.errorCode === "pipeline_limit_exceeded"
+  );
+  assert.equal(harness.db.state.pipelineRuns.length, 1);
+  assert.equal(harness.db.state.articles.length, 1);
+});
+
+await test("global daily limit rejects a fourth run and keeps manual and Cron trigger budgets separate", async () => {
+  const db = new PipelineD1Mock();
+  db.seedRun({ trigger_type: "manual", status: "completed", started_at: "2026-08-10T00:01:00.000Z" });
+  db.seedRun({ trigger_type: "manual", status: "failed", started_at: "2026-08-10T02:01:00.000Z" });
+  const cron = await acquirePipelineRun(db, cronSpecification(1786320000000), {
+    now: () => new Date("2026-08-10T04:00:00.000Z"), randomUUID: () => "global-third"
+  });
+  assert.equal(cron.acquired, true);
+  await assert.rejects(acquirePipelineRun(db, manualSpecification("global-fourth"), {
+    now: () => new Date("2026-08-10T05:30:00.000Z"), randomUUID: () => "global-fourth"
+  }), (error) => error.errorCode === "pipeline_limit_exceeded");
+  assert.equal(db.state.pipelineRuns.length, 3);
+});
+
+await test("different manual keys racing cannot exceed the atomic active limit", async () => {
+  const db = new PipelineD1Mock();
+  const runtime = { now: () => FIXED_DATE };
+  const results = await Promise.allSettled([
+    acquirePipelineRun(db, manualSpecification("race-a"), { ...runtime, randomUUID: () => "race-a" }),
+    acquirePipelineRun(db, manualSpecification("race-b"), { ...runtime, randomUUID: () => "race-b" })
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected" && result.reason.errorCode === "pipeline_limit_exceeded").length, 1);
+  assert.equal(db.state.pipelineRuns.length, 1);
+  assert.match(source, /INSERT INTO pipeline_runs[\s\S]*SELECT[\s\S]*WHERE/);
+});
+
+await test("budget query and conditional insert failures fail closed", async () => {
+  for (const dbOptions of [{ failConditionalInsert: true }, { failBudgetQuery: true }]) {
+    const db = new PipelineD1Mock(dbOptions);
+    if (dbOptions.failBudgetQuery) db.seedRun({ trigger_type: "manual", status: "running" });
+    const harness = createHarness({ db });
+    const result = await handleTestMultiLlm(new Request("https://local.test/test-multillm", {
+      method: "POST", headers: { "Idempotency-Key": "fail-closed" }
+    }), harness.env, harness.runtime);
+    assert.equal(result.status, 503);
+    assert.equal(harness.calls.length, 0);
+    assert.equal(db.state.articles.length, 0);
+  }
+});
+
+await test("Discord ambiguous network result keeps saved article in sending without retry", async () => {
+  const harness = createHarness();
+  harness.runtime.fetch = async (url) => {
+    harness.calls.push(url);
+    if (url.includes("googleapis")) return response(200, successData("gemini"));
+    if (url.includes("anthropic")) return response(200, successData("claude"));
+    if (url.includes("openai")) return response(200, successData("openai"));
+    throw new Error("ambiguous network failure");
+  };
+  await assert.rejects(runReliablePipeline(harness.env, manualSpecification("discord-ambiguous"), harness.runtime));
+  const run = harness.db.state.pipelineRuns[0];
+  assert.equal(run.status, "saved");
+  assert.equal(run.stage, "discord");
+  assert.equal(run.notification_status, "sending");
+  assert.equal(harness.db.state.articles.length, 1);
+  assert.equal(harness.calls.filter((url) => url.includes("discord")).length, 1);
+});
+
+await test("existing stage timeouts and retry limits remain present", async () => {
+  assert.match(source, /gemini:\s*45_000/);
+  assert.match(source, /claude:\s*60_000/);
+  assert.match(source, /openai:\s*60_000/);
+  assert.match(source, /discord:\s*10_000/);
+  assert.match(source, /const LLM_MAX_ATTEMPTS = 2/);
+  assert.match(source, /const DISCORD_MAX_ATTEMPTS = 3/);
 });
 
 console.log(`1..${testCount}`);
