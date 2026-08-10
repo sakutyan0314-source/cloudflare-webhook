@@ -701,6 +701,14 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 
 ## 18. 変更履歴
 
+### v1.9.1-A — 2026-08-10
+
+- SEO記事基盤（`0004_seo_article_foundation.sql`）を利用し、承認済みmanifestに限定して既存legacy記事 ID 17 / 20 / 26 を本番backfillした。3件を `ready` 化し、状態内訳は `ready=3`、`legacy=8`、`needs_review=0` とした
+- 更新対象は `title`、`description`、`body_markdown`、`category`、`published_at`、`updated_at`、`seo_status` のみ。`content`、ID、pipeline、reconciliation、通知状態は変更していない
+- 全対象で `body_markdown` SHA-256 と既存 `content` SHA-256 の一致を確認。backfill後も `pipeline_runs=2`、`curation_logs=11`、`notification_status=sending=0`、`pipeline_reconciliation_events=0` を維持した
+- Worker deploy、migration、pipeline実行、Discord送信は実施していない。個別記事3件のcanonical、OGP、Twitter Card、JSON-LD、およびsitemapの固定`updated_at`由来lastmodを確認した
+- 監査証跡はGit管理外の保護領域へ保存済み。Time Travel bookmark: `000000c2-00000000-000050c3-cb00fa8be896d50c58f2497c16a30c35`、pre-backfill export SHA-256: `14c95286c896826064c73d7b0004de8629eca26b65b85782586102fc54913bc6`、dry-run audit SHA-256: `348c53b9dcafdc015e1440c5949a2656eb12f94b55af6fd645c71588c1166454`
+
 ### v1.8 — 2026-08-10
 
 - stale runを自動失敗化・自動再開せず、人間照合が必要な状態として返すよう安全側へ変更
