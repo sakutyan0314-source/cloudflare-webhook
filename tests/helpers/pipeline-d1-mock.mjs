@@ -72,7 +72,14 @@ export class PipelineD1Mock {
       llm_name: values.llm_name ?? "test",
       content: values.content ?? "article",
       created_at: values.created_at ?? "2026-08-10T00:00:00.000Z",
-      pipeline_run_id: values.pipeline_run_id ?? null
+      pipeline_run_id: values.pipeline_run_id ?? null,
+      title: values.title ?? null,
+      description: values.description ?? null,
+      body_markdown: values.body_markdown ?? null,
+      category: values.category ?? "uncategorized",
+      published_at: values.published_at ?? null,
+      updated_at: values.updated_at ?? null,
+      seo_status: values.seo_status ?? "legacy"
     };
     this.state.articles.push(article);
     return article;
@@ -124,6 +131,9 @@ class StatementMock {
   }
 
   async all() {
+    if (this.sql.startsWith("SELECT * FROM curation_logs ORDER BY id DESC LIMIT 5")) {
+      return { results: [...this.db.state.articles].sort((left, right) => right.id - left.id).slice(0, 5) };
+    }
     return { results: [] };
   }
 
@@ -172,14 +182,23 @@ class StatementMock {
     }
 
     if (this.sql.startsWith("INSERT INTO curation_logs")) {
-      const [sourceType, llmName, content, createdAt, pipelineRunId] = this.args;
+      const [sourceType, llmName, content, createdAt, pipelineRunId,
+        title, description, bodyMarkdown, category,
+        publishedAt, updatedAt, seoStatus] = this.args;
       if (options.failArticleInsert) throw new Error("article insert failed");
       const article = this.db.seedArticle({
         source_type: sourceType,
         llm_name: llmName,
         content,
         created_at: createdAt,
-        pipeline_run_id: pipelineRunId
+        pipeline_run_id: pipelineRunId,
+        title,
+        description,
+        body_markdown: bodyMarkdown,
+        category,
+        published_at: publishedAt,
+        updated_at: updatedAt,
+        seo_status: seoStatus
       });
       return { meta: { changes: 1, last_row_id: article.id } };
     }

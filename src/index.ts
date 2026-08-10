@@ -211,11 +211,11 @@ async function handleHomePage(env, url) {
     const pageParam = parseInt(url.searchParams.get("page") || "1", 10);
     const currentPage = Number.isNaN(pageParam) || pageParam < 1 ? 1 : pageParam;
     const perPage = 5;
-    const offset = (currentPage - 1) * perPage;
-    const countResult = await env.DB.prepare(
-      "SELECT COUNT(*) as total FROM curation_logs"
-    ).first();
-    const totalItems = countResult?.total ?? 0;
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM curation_logs ORDER BY id DESC LIMIT 1000"
+    ).all();
+    const publicArticles = (results ?? []).filter((row) => readSeoArticle(row).seoStatus !== "needs_review");
+    const totalItems = publicArticles.length;
     const totalPages = Math.ceil(totalItems / perPage) || 1;
     if (currentPage > totalPages) {
       return new Response("ページが見つかりません。", {
@@ -223,11 +223,10 @@ async function handleHomePage(env, url) {
         headers: TEXT_HEADERS
       });
     }
-    const { results } = await env.DB.prepare(
-      "SELECT * FROM curation_logs ORDER BY id DESC LIMIT ? OFFSET ?"
-    ).bind(perPage, offset).all();
+    const offset = (currentPage - 1) * perPage;
+    const pageResults = publicArticles.slice(offset, offset + perPage);
     const affiliateTag = env.AMAZON_TAG || "default-22";
-    const html = renderHomePage(results ?? [], {
+    const html = renderHomePage(pageResults, {
       affiliateTag,
       currentPage,
       totalPages,
@@ -243,6 +242,252 @@ async function handleHomePage(env, url) {
     });
   }
 }
+
+function nonPublicArticleResponse() {
+  return new Response("記事が見つかりませんでした。", {
+    status: 404,
+    headers: {
+      ...TEXT_HEADERS,
+      "X-Robots-Tag": "noindex"
+    }
+  });
+}
+
+const SEO_CATEGORIES = new Set([
+  "ai-automation",
+  "saas-cloud",
+  "security-governance",
+  "engineering-infrastructure",
+  "dx-organization",
+  "marketing-cx",
+  "uncategorized"
+]);
+const SEO_STATUSES = new Set(["legacy", "ready", "needs_review"]);
+const MIN_SEO_ARTICLE_BODY_LENGTH = 240;
+const RECENT_ARTICLE_SIMILARITY_THRESHOLD = 0.8;
+
+function seoText(value) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function seoDate(value, fallback) {
+  const candidate = seoText(value);
+  return candidate && Number.isFinite(Date.parse(candidate)) ? candidate : fallback;
+}
+
+function legacyArticleTitle(content, id) {
+  const firstLine = content.split(/\r?\n/).find((line) => line.trim()) || `記事 ${id}`;
+  return firstLine.replace(/^#+\s*/, "").slice(0, 80);
+}
+
+function legacyArticleDescription(content) {
+  return content
+    .replace(/[#>*_`\[\]\(\)]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+}
+
+function readSeoArticle(row) {
+  const content = String(row?.content || "");
+  const bodyMarkdown = seoText(row?.body_markdown) || content;
+  const createdAt = seoDate(row?.created_at, new Date(0).toISOString());
+  const publishedAt = seoDate(row?.published_at, createdAt);
+  const updatedAt = seoDate(row?.updated_at, publishedAt);
+  const category = SEO_CATEGORIES.has(row?.category) ? row.category : "uncategorized";
+  const seoStatus = SEO_STATUSES.has(row?.seo_status) ? row.seo_status : "legacy";
+
+  return {
+    id: row?.id,
+    title: seoText(row?.title) || legacyArticleTitle(bodyMarkdown, row?.id),
+    description: seoText(row?.description) || legacyArticleDescription(bodyMarkdown),
+    bodyMarkdown,
+    category,
+    publishedAt,
+    updatedAt,
+    seoStatus
+  };
+}
+
+function determineArticleCategory(content) {
+  const lower = String(content || "").toLowerCase();
+  if (lower.includes("セキュリティ") || lower.includes("サイバー") || lower.includes("ガバナンス") || lower.includes("リスク")) {
+    return "security-governance";
+  }
+  if (lower.includes("saas") || lower.includes("クラウド")) return "saas-cloud";
+  if (lower.includes("プログラミング") || lower.includes("開発") || lower.includes("エンジニア") || lower.includes("アーキテクチャ") || lower.includes("インフラ")) {
+    return "engineering-infrastructure";
+  }
+  if (lower.includes("マーケティング") || lower.includes("cx") || lower.includes("顧客") || lower.includes("sales")) {
+    return "marketing-cx";
+  }
+  if (lower.includes("dx") || lower.includes("マネジメント") || lower.includes("組織") || lower.includes("リーダーシップ") || lower.includes("人材")) {
+    return "dx-organization";
+  }
+  if (lower.includes("ai") || lower.includes("人工知能") || lower.includes("自動化") || lower.includes("エージェント") || lower.includes("生成ai")) {
+    return "ai-automation";
+  }
+  return "uncategorized";
+}
+
+function titleSimilarity(left, right) {
+  const normalize = (value) => String(value || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const leftText = normalize(left);
+  const rightText = normalize(right);
+  if (!leftText || !rightText) return 0;
+  if (leftText === rightText) return 1;
+  const shingles = (value) => {
+    const result = new Set();
+    for (let index = 0; index <= value.length - 3; index += 1) result.add(value.slice(index, index + 3));
+    return result.size > 0 ? result : new Set([value]);
+  };
+  const leftShingles = shingles(leftText);
+  const rightShingles = shingles(rightText);
+  const intersection = [...leftShingles].filter((value) => rightShingles.has(value)).length;
+  return intersection / (leftShingles.size + rightShingles.size - intersection);
+}
+
+function parseGeneratedSeoArticle(markdown, nowIso) {
+  const lines = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+  const firstContentIndex = lines.findIndex((line) => line.trim() !== "");
+  const titleMatch = firstContentIndex >= 0 ? lines[firstContentIndex].trim().match(/^#\s+(.+)$/) : null;
+  if (!titleMatch) return null;
+  const title = titleMatch[1].trim();
+  const bodyMarkdown = lines.filter((_, index) => index !== firstContentIndex).join("\n").trim();
+  const description = legacyArticleDescription(bodyMarkdown);
+  const category = determineArticleCategory(`${title}\n${bodyMarkdown}`);
+  if (!title || !description || !bodyMarkdown || !SEO_CATEGORIES.has(category)) return null;
+  return {
+    content: String(markdown || "").trim(),
+    title,
+    description,
+    bodyMarkdown,
+    category,
+    publishedAt: nowIso,
+    updatedAt: nowIso,
+    seoStatus: "ready"
+  };
+}
+
+async function prepareSeoArticleForSave(db, markdown, runtime = {}) {
+  const nowIso = runtimeNow(runtime).toISOString();
+  const article = parseGeneratedSeoArticle(markdown, nowIso);
+  const invalid = !article ||
+    article.bodyMarkdown.length < MIN_SEO_ARTICLE_BODY_LENGTH ||
+    !/^##\s+\S/m.test(article.bodyMarkdown);
+  if (invalid) {
+    throw new OperationError({ stage: "seo_quality", provider: "worker", errorCode: "seo_quality_failed" });
+  }
+
+  let recentArticles;
+  try {
+    const result = await db.prepare(
+      "SELECT * FROM curation_logs ORDER BY id DESC LIMIT 5"
+    ).all();
+    recentArticles = result?.results ?? [];
+  } catch {
+    throw new OperationError({ stage: "seo_quality", provider: "d1", errorCode: "seo_quality_check_failed" });
+  }
+  const isTooSimilar = recentArticles.some((row) => {
+    const existing = readSeoArticle(row);
+    return titleSimilarity(article.title, existing.title) >= RECENT_ARTICLE_SIMILARITY_THRESHOLD;
+  });
+  return { ...article, seoStatus: isTooSimilar ? "needs_review" : "ready" };
+}
+
+function renderInlineMarkdown(value) {
+  const text = String(value || "");
+  const linkPattern = /\[([^\]]+)\]\(([^\s)]+)\)/g;
+  let output = "";
+  let cursor = 0;
+  let match;
+
+  while ((match = linkPattern.exec(text)) !== null) {
+    output += escapeHtml(text.slice(cursor, match.index));
+    const label = escapeHtml(match[1]);
+    let href;
+    try {
+      const parsedUrl = new URL(match[2]);
+      href = ["https:", "http:"].includes(parsedUrl.protocol) ? parsedUrl.href : null;
+    } catch {
+      href = null;
+    }
+    output += href
+      ? `<a href="${escapeHtml(href)}" rel="nofollow noopener noreferrer">${label}</a>`
+      : escapeHtml(match[0]);
+    cursor = linkPattern.lastIndex;
+  }
+
+  return output + escapeHtml(text.slice(cursor));
+}
+
+function renderArticleMarkdown(markdown, pageTitle) {
+  const lines = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let listItems = [];
+
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    blocks.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+    listItems = [];
+  };
+  const flushText = () => {
+    flushParagraph();
+    flushList();
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === "") {
+      flushText();
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushText();
+      const level = heading[1].length;
+      const headingText = heading[2].trim();
+      if (level === 1 && headingText === pageTitle.trim()) continue;
+      const tag = level === 3 ? "h3" : "h2";
+      blocks.push(`<${tag}>${renderInlineMarkdown(headingText)}</${tag}>`);
+      continue;
+    }
+
+    const listItem = trimmed.match(/^[-*]\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      listItems.push(listItem[1]);
+      continue;
+    }
+
+    flushList();
+    paragraph.push(trimmed);
+  }
+
+  flushText();
+  return blocks.length > 0 ? blocks.join("\n") : "<p>本文はありません。</p>";
+}
+
+function categoryLabel(category) {
+  const labels = {
+    "ai-automation": "AI・自動化",
+    "saas-cloud": "SaaS・クラウド",
+    "security-governance": "セキュリティ・ガバナンス",
+    "engineering-infrastructure": "開発・インフラ",
+    "dx-organization": "DX・組織変革",
+    "marketing-cx": "マーケティング・CX",
+    uncategorized: "その他"
+  };
+  return labels[category] || labels.uncategorized;
+}
+
 async function handleArticlePage(env, articleId) {
   try {
     const siteUrl = getSiteUrl(env);
@@ -256,39 +501,19 @@ async function handleArticlePage(env, articleId) {
     }
 
     const row = await env.DB.prepare(
-      "SELECT id, content, created_at FROM curation_logs WHERE id = ? LIMIT 1"
+      "SELECT * FROM curation_logs WHERE id = ? LIMIT 1"
     ).bind(id).first();
 
     if (!row) {
-      return new Response(
-        `<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>記事が見つかりません</title>
-</head>
-<body>
-  <h1>記事が見つかりませんでした。</h1>
-  <p><a href="/">トップページへ戻る</a></p>
-</body>
-</html>`,
-        {
-          status: 404,
-          headers: HTML_HEADERS
-        }
-      );
+      return nonPublicArticleResponse();
     }
 
-    const content = String(row.content || "");
-    const firstLine =
-      content.split(/\r?\n/).find((line) => line.trim()) || `記事 ${id}`;
-
-    const pageTitle = firstLine
-      .replace(/^#+\s*/, "")
-      .slice(0, 80);
-
-    const dateStr = new Date(row.created_at).toLocaleString("ja-JP");
+    const article = readSeoArticle(row);
+    if (article.seoStatus === "needs_review") return nonPublicArticleResponse();
+    const content = article.bodyMarkdown;
+    const pageTitle = article.title;
+    const description = article.description;
+    const dateStr = new Date(article.updatedAt).toLocaleString("ja-JP");
 
     const affiliateTag = env.AMAZON_TAG || "default-22";
     const keyword = determineAffiliateKeyword(content);
@@ -296,7 +521,6 @@ async function handleArticlePage(env, articleId) {
     const affiliateUrl =
       `https://www.amazon.co.jp/s?k=${encodeURIComponent(keyword)}&tag=${encodeURIComponent(affiliateTag)}`;
 const canonicalUrl = `${siteUrl}/article/${id}`;
-const description = content.replace(/[#>*_`\[\]\(\)]/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
     const html = `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -321,8 +545,9 @@ ${JSON.stringify({
   "@type": "Article",
   headline: pageTitle,
   description: description,
-  datePublished: row.created_at,
-  dateModified: row.created_at,
+  datePublished: article.publishedAt,
+  dateModified: article.updatedAt,
+  articleSection: article.category,
   mainEntityOfPage: {
     "@type": "WebPage",
     "@id": canonicalUrl
@@ -389,7 +614,7 @@ ${JSON.stringify({
         更新日時: ${escapeHtml(dateStr)}
       </div>
 
-      <div class="content">${escapeHtml(content)}</div>
+      <div class="content">${renderArticleMarkdown(content, pageTitle)}</div>
 
       <div class="affiliate-box">
         🛒 厳選おすすめ関連アイテム（${escapeHtml(keyword)}）：
@@ -784,7 +1009,7 @@ async function getPipelineRunByKey(db, idempotencyKey) {
 
 async function getArticleForRun(db, runId) {
   return db.prepare(
-    "SELECT id, content, created_at, pipeline_run_id FROM curation_logs WHERE pipeline_run_id = ? LIMIT 1"
+    "SELECT * FROM curation_logs WHERE pipeline_run_id = ? LIMIT 1"
   ).bind(runId).first();
 }
 
@@ -961,14 +1186,23 @@ async function saveArticleAndMarkSaved(db, run, specification, article, runtime 
   const nowIso = runtimeNow(runtime).toISOString();
   const insertStatement = db.prepare(
     `INSERT INTO curation_logs
-      (source_type, llm_name, content, created_at, pipeline_run_id)
-     VALUES (?, ?, ?, ?, ?)`
+      (source_type, llm_name, content, created_at, pipeline_run_id,
+       title, description, body_markdown, category,
+       published_at, updated_at, seo_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     specification.sourceType,
     "Pro-Consensus Pipeline",
-    article,
+    article.content,
     nowIso,
-    run.id
+    run.id,
+    article.title,
+    article.description,
+    article.bodyMarkdown,
+    article.category,
+    article.publishedAt,
+    article.updatedAt,
+    article.seoStatus
   );
   const updateStatement = db.prepare(
     `UPDATE pipeline_runs
@@ -1076,6 +1310,9 @@ async function handleExistingPipelineRun(env, run, specification, runtime = {}) 
 
   const article = await getArticleForRun(env.DB, run.id);
   if (article) {
+    if (article.seo_status === "needs_review") {
+      return { outcome: "needs_review", runId: run.id, articleId: article.id };
+    }
     if (run.notification_status === "sending") {
       return { outcome: "notification_in_progress", runId: run.id, articleId: article.id };
     }
@@ -1115,9 +1352,15 @@ async function runReliablePipeline(env, specification, runtime = {}) {
     stage = "openai";
     await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
     const finalArticle = await callOpenAI(env.OPENAI_API_KEY, reviewed, pipelineRuntime);
+    stage = "seo_quality";
+    await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
+    const seoArticle = await prepareSeoArticleForSave(env.DB, finalArticle, pipelineRuntime);
     stage = "d1_save";
     await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
-    const savedArticle = await saveArticleAndMarkSaved(env.DB, run, specification, finalArticle, pipelineRuntime);
+    const savedArticle = await saveArticleAndMarkSaved(env.DB, run, specification, seoArticle, pipelineRuntime);
+    if (seoArticle.seoStatus === "needs_review") {
+      return { outcome: "needs_review", runId: run.id, articleId: savedArticle.id };
+    }
     assertPipelineDeadline(pipelineRuntime, "discord", "discord");
     return await sendSavedArticleNotification(env, { ...run, status: "saved" }, savedArticle, specification, pipelineRuntime);
   } catch (error) {
@@ -1142,7 +1385,7 @@ function buildDiscordMessage(content, createdAt, amazonTag, header = "📢 **【
 }
 
 function renderHomePage(results, options) {
-  const { affiliateTag, currentPage, totalPages, totalItems, siteUrl } = options;
+  const { currentPage, totalPages, totalItems, siteUrl } = options;
   const canonicalUrl = currentPage === 1 ? `${siteUrl}/` : `${siteUrl}/?page=${currentPage}`;
   const pageSuffix = currentPage === 1 ? "" : ` | ${currentPage}ページ目`;
   const pageTitle = `テクノロジー＆ビジネストレンド最速まとめ速報${pageSuffix}`;
@@ -1150,24 +1393,22 @@ function renderHomePage(results, options) {
   const previousUrl = currentPage === 2 ? `${siteUrl}/` : `${siteUrl}/?page=${currentPage - 1}`;
   const nextUrl = `${siteUrl}/?page=${currentPage + 1}`;
   const postsHtml = results.length > 0 ? results.map((row) => {
-    const dateStr = new Date(row.created_at).toLocaleString("ja-JP");
-    const keyword = determineAffiliateKeyword(row.content);
-    const encodedKeyword = encodeURIComponent(keyword);
-    const dynamicAffiliateUrl = `https://www.amazon.co.jp/s?k=${encodedKeyword}&tag=${escapeHtml(affiliateTag)}`;
+    const article = readSeoArticle(row);
+    const dateStr = new Date(article.publishedAt).toLocaleString("ja-JP");
+    const articleUrl = `/article/${escapeHtml(String(article.id))}`;
 
     return `
-          <div class="post">
+          <article class="post">
+            <h2><a href="${articleUrl}">${escapeHtml(article.title)}</a></h2>
             <div class="meta">
-              <span>更新日時: ${escapeHtml(dateStr)}</span>
+              <span>公開日時: ${escapeHtml(dateStr)}</span>
+              <span class="category">${escapeHtml(categoryLabel(article.category))}</span>
             </div>
-            <div class="content">${escapeHtml(row.content)}</div>
+            <p class="excerpt">${escapeHtml(article.description)}</p>
             <div class="read-more">
-              <a href="/article/${escapeHtml(String(row.id))}">続きを読む &rarr;</a>
+              <a href="${articleUrl}">続きを読む &rarr;</a>
             </div>
-            <div class="affiliate-box">
-              🛒 厳選おすすめ関連アイテム（${escapeHtml(keyword)}）: <a href="${dynamicAffiliateUrl}" target="_blank" rel="nofollow">Amazonで最新商品をチェックする</a>
-            </div>
-          </div>
+          </article>
         `;
   }).join("") : "<p>現在、蓄積されたデータはありません。</p>";
 
@@ -1198,8 +1439,12 @@ ${currentPage < totalPages ? `<link rel="next" href="${nextUrl}">` : ""}
     h1 { font-size: 24px; border-bottom: 2px solid #eaeaea; padding-bottom: 10px; margin-top: 0; color: #111; }
     .post { border-bottom: 1px solid #eee; padding: 25px 0; }
     .post:last-child { border-bottom: none; }
+    .post h2 { font-size: 19px; line-height: 1.5; margin: 0 0 10px; }
+    .post h2 a { color: #111; text-decoration: none; }
+    .post h2 a:hover { text-decoration: underline; }
     .meta { font-size: 12px; color: #888; margin-bottom: 10px; display: flex; gap: 15px; align-items: center; }
-    .content { font-size: 15px; line-height: 1.8; color: #222; margin-bottom: 15px; white-space: pre-line; }
+    .category { background: #edf4ff; border-radius: 999px; color: #1856a5; padding: 2px 8px; }
+    .excerpt { font-size: 15px; line-height: 1.8; color: #222; margin: 0 0 15px; }
     .read-more { margin-bottom: 15px; }
     .read-more a { color: #0070f3; text-decoration: none; font-size: 14px; font-weight: bold; }
     .read-more a:hover { text-decoration: underline; }
@@ -1242,22 +1487,25 @@ async function handleSitemap(env) {
   try {
     const siteUrl = getSiteUrl(env);
     const { results } = await env.DB.prepare(
-      "SELECT id, created_at FROM curation_logs ORDER BY id DESC LIMIT 1000"
+      "SELECT * FROM curation_logs ORDER BY id DESC LIMIT 1000"
     ).all();
 
-    const articleUrls = (results ?? []).map((row) => {
-      const lastmod = row.created_at
-        ? new Date(row.created_at).toISOString()
+    const articleUrls = (results ?? [])
+      .map((row) => readSeoArticle(row))
+      .filter((article) => article.seoStatus !== "needs_review")
+      .map((article) => {
+      const lastmod = article.updatedAt
+        ? new Date(article.updatedAt).toISOString()
         : new Date().toISOString();
 
       return `
   <url>
-    <loc>${siteUrl}/article/${row.id}</loc>
+    <loc>${siteUrl}/article/${article.id}</loc>
     <lastmod>${lastmod}</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>`;
-    }).join("");
+      }).join("");
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

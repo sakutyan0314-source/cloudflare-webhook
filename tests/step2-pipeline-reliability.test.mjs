@@ -43,10 +43,20 @@ function response(status, data = {}) {
   });
 }
 
-function successData(provider) {
+function validFinalArticle(sequence = 0) {
+  const titles = [
+    "生成AIガバナンスを経営に組み込む実践戦略",
+    "ゼロトラスト時代の事業継続性を高める設計",
+    "クラウド最適化で競争優位を築く意思決定"
+  ];
+  const body = "現場での意思決定、責任分界、継続的な評価を同時に進めることで、技術導入を持続的な事業価値へ変換できます。".repeat(4);
+  return `# ${titles[sequence % titles.length]}\n\n## トレンドの核心\n${body}\n\n## 現場での実行計画\n${body}`;
+}
+
+function successData(provider, finalArticle = "final article") {
   if (provider === "gemini") return { candidates: [{ content: { parts: [{ text: "draft" }] } }] };
   if (provider === "claude") return { content: [{ text: "reviewed" }] };
-  return { choices: [{ message: { content: "final article" } }] };
+  return { choices: [{ message: { content: finalArticle } }] };
 }
 
 function createHarness(options = {}) {
@@ -66,7 +76,10 @@ function createHarness(options = {}) {
       calls.push(url);
       if (url.includes("googleapis")) return response(200, successData("gemini"));
       if (url.includes("anthropic")) return response(200, successData("claude"));
-      if (url.includes("openai")) return response(200, successData("openai"));
+      if (url.includes("openai")) {
+        const finalArticle = options.finalArticle ?? validFinalArticle(db.state.articles.length);
+        return response(200, successData("openai", finalArticle));
+      }
       if (url.includes("discord")) {
         return discordShouldFail ? response(500) : new Response(null, { status: 204 });
       }
@@ -233,6 +246,43 @@ await test("same manual key does not run LLM twice", async () => {
   assert.equal(second.outcome, "completed");
   assert.equal(harness.calls.length, callsAfterFirst);
   assert.equal(harness.db.state.articles.length, 1);
+});
+
+await test("quality gate saves a ready SEO article with separated fields", async () => {
+  const harness = createHarness();
+  await runReliablePipeline(harness.env, manualSpecification("seo-ready"), harness.runtime);
+  const article = harness.db.state.articles[0];
+  assert.equal(article.seo_status, "ready");
+  assert.match(article.title, /経営|クラウド|ゼロトラスト/);
+  assert.ok(article.description.length > 0);
+  assert.match(article.body_markdown, /^## /);
+  assert.ok(article.published_at);
+  assert.ok(article.updated_at);
+  assert.notEqual(article.category, undefined);
+});
+
+await test("quality gate failure records a failed run without saving or notifying", async () => {
+  const harness = createHarness({ finalArticle: "# 壊れた記事\n\n本文だけです" });
+  await assert.rejects(runReliablePipeline(harness.env, manualSpecification("seo-failure"), harness.runtime));
+  const run = harness.db.state.pipelineRuns[0];
+  assert.equal(run.status, "failed");
+  assert.equal(run.stage, "seo_quality");
+  assert.equal(run.error_code, "seo_quality_failed");
+  assert.equal(harness.db.state.articles.length, 0);
+  assert.equal(harness.calls.some((url) => url.includes("discord")), false);
+});
+
+await test("too-similar article is saved for review without Discord notification", async () => {
+  const db = new PipelineD1Mock();
+  const candidate = validFinalArticle(0);
+  db.seedArticle({ title: "生成AIガバナンスを経営に組み込む実践戦略", content: candidate });
+  const harness = createHarness({ db, finalArticle: candidate });
+  const result = await runReliablePipeline(harness.env, manualSpecification("seo-review"), harness.runtime);
+  const article = harness.db.state.articles.at(-1);
+  assert.equal(result.outcome, "needs_review");
+  assert.equal(article.seo_status, "needs_review");
+  assert.equal(harness.db.state.pipelineRuns[0].status, "saved");
+  assert.equal(harness.calls.some((url) => url.includes("discord")), false);
 });
 
 await test("Cron and manual namespaces do not collide", async () => {
@@ -589,7 +639,7 @@ await test("Discord ambiguous network result keeps saved article in sending with
     harness.calls.push(url);
     if (url.includes("googleapis")) return response(200, successData("gemini"));
     if (url.includes("anthropic")) return response(200, successData("claude"));
-    if (url.includes("openai")) return response(200, successData("openai"));
+    if (url.includes("openai")) return response(200, successData("openai", validFinalArticle(0)));
     throw new Error("ambiguous network failure");
   };
   await assert.rejects(runReliablePipeline(harness.env, manualSpecification("discord-ambiguous"), harness.runtime));

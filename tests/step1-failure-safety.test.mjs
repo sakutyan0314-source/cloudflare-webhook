@@ -272,13 +272,18 @@ await test("D1 insert throw is sanitized", async () => {
   });
 });
 
+const VALID_SEO_ARTICLE = `# AIガバナンスを事業成果へつなげる実践戦略
+
+## トレンドの核心
+現場での意思決定、責任分界、継続的な評価を同時に進めることで、技術導入を持続的な事業価値へ変換できます。組織横断の合意形成と運用指標の設計を早期に進めることが、変化の速度を成果へつなげる重要な条件です。`.repeat(2);
+
 function pipelineRuntime(overrides = {}) {
   const calls = [];
   const runtime = runtimeWith(async (url) => {
     calls.push(url);
     if (url.includes("googleapis")) return response(200, successData("gemini"));
     if (url.includes("anthropic")) return response(200, successData("claude"));
-    if (url.includes("openai")) return response(200, successData("openai"));
+    if (url.includes("openai")) return response(200, successData("openai", VALID_SEO_ARTICLE));
     if (url.includes("discord")) return new Response(null, { status: 204 });
     throw new Error("unexpected URL");
   });
@@ -319,7 +324,7 @@ for (const failedProvider of ["gemini", "claude", "openai", "discord"]) {
       if (url.includes(failureHost)) return response(400);
       if (url.includes("googleapis")) return response(200, successData("gemini"));
       if (url.includes("anthropic")) return response(200, successData("claude"));
-      if (url.includes("openai")) return response(200, successData("openai"));
+      if (url.includes("openai")) return response(200, successData("openai", VALID_SEO_ARTICLE));
       return new Response(null, { status: 204 });
     });
     await assert.rejects(runScheduledPipeline(pipelineEnv(), runtime));
@@ -360,7 +365,7 @@ await test("/test-multillm returns 500 when D1 insert fails", async () => {
   globalThis.fetch = async (url) => {
     if (url.includes("googleapis")) return response(200, successData("gemini"));
     if (url.includes("anthropic")) return response(200, successData("claude"));
-    return response(200, successData("openai"));
+    return response(200, successData("openai", VALID_SEO_ARTICLE));
   };
   try {
     const request = new Request("https://local.test/test-multillm", {
@@ -457,13 +462,13 @@ await test("all operations endpoint method and authentication contracts remain u
 });
 
 function publicPageDb() {
-  const rows = [{
-    id: 25,
+  const rows = Array.from({ length: 9 }, (_, index) => ({
+    id: 25 - index,
     source_type: "cron_pro_consensus",
     llm_name: "Pro-Consensus Pipeline",
     content: "# テスト記事\n生成AIとクラウドの最新動向",
     created_at: "2026-08-09T23:00:00.000Z"
-  }];
+  }));
 
   return {
     prepare(sql) {
@@ -498,8 +503,9 @@ await test("public SEO pages retain canonical, links, JSON-LD, sitemap and robot
   assert.match(homeHtml, /rel="canonical" href="https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/"/);
   assert.match(homeHtml, /rel="next" href="https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/\?page=2"/);
   assert.match(homeHtml, /property="og:url" content="https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/"/);
+  assert.match(homeHtml, /<h2><a href="\/article\/25">テスト記事<\/a><\/h2>/);
   assert.match(homeHtml, /href="\/article\/25">続きを読む/);
-  assert.match(homeHtml, /amazon\.co\.jp/);
+  assert.doesNotMatch(homeHtml, /<div class="content">/);
 
   const pageTwo = await worker.fetch(new Request("https://different-host.invalid/?page=2"), env, {});
   const pageTwoHtml = await pageTwo.text();
@@ -529,6 +535,44 @@ await test("public SEO pages retain canonical, links, JSON-LD, sitemap and robot
   assert.equal(robots.status, 200);
   assert.match(robots.headers.get("Content-Type"), /text\/plain/);
   assert.match(robotsText, /Sitemap: https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/sitemap\.xml/);
+});
+
+await test("needs_review articles are excluded from public pages and return noindex 404", async () => {
+  const row = {
+    id: 26,
+    source_type: "cron_pro_consensus",
+    llm_name: "Pro-Consensus Pipeline",
+    content: "# 確認待ち記事\n\n## 本文\n確認待ちの本文",
+    title: "確認待ち記事",
+    description: "確認待ちの説明",
+    body_markdown: "## 本文\n確認待ちの本文",
+    category: "ai-automation",
+    published_at: "2026-08-10T00:00:00.000Z",
+    updated_at: "2026-08-10T00:00:00.000Z",
+    seo_status: "needs_review",
+    created_at: "2026-08-10T00:00:00.000Z"
+  };
+  const db = {
+    prepare() {
+      return {
+        bind() { return this; },
+        async first() { return row; },
+        async all() { return { results: [row] }; }
+      };
+    }
+  };
+  const env = { DB: db, SITE_URL: "https://cloudflare-webhook.tyansaku3325.workers.dev" };
+  const home = await worker.fetch(new Request("https://local.test/"), env, {});
+  const homeHtml = await home.text();
+  assert.doesNotMatch(homeHtml, /確認待ち記事/);
+
+  const sitemap = await worker.fetch(new Request("https://local.test/sitemap.xml"), env, {});
+  assert.doesNotMatch(await sitemap.text(), /article\/26/);
+
+  const article = await worker.fetch(new Request("https://local.test/article/26"), env, {});
+  assert.equal(article.status, 404);
+  assert.equal(article.headers.get("X-Robots-Tag"), "noindex");
+  assert.doesNotMatch(await article.text(), /canonical|application\/ld\+json/);
 });
 
 console.log(`1..${testCount}`);
