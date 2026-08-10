@@ -1,9 +1,9 @@
-# Master Blueprint v1.7
+# Master Blueprint v1.8
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.7
+**文書状態:** 正式基準文書 v1.8（reconciliation実装済み・本番未反映）
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -304,7 +304,13 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 
 ### 6.3 実装済み・未コミット・本番未反映
 
-現時点で該当なし。
+- stale runとDiscord結果不明通知を分類する認証済み`/pipeline-reconciliation` GET/POSTを実装
+- GETは記事本文・Idempotency-Keyを返さず、状態変更もしない
+- stale runは同一Keyの再呼び出しでも自動失敗化・自動再開せず、`reconciliation_required`で停止
+- `sending`は自動再送せず、送達済み・確実に未送信を人間が確認できた場合だけ比較更新を許可
+- `0003_pipeline_reconciliation_audit.sql`で監査イベントテーブルを追加。既存run・記事の更新は含まない
+- 状態変更は固有`Reconciliation-Key`、根拠メモ、期待状態の一致を必須とし、競合は409で停止
+- Step 1 44件、Step 2 40件、Step 3 reconciliationローカル統合テストに成功。本番migration・deploy・状態変更は未実施
 
 ### 6.4 意図的に保持している未追跡ファイル
 
@@ -316,7 +322,6 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 
 ### 6.5 未実装または未完成
 
-- stale run、`notification_status=sending`、結果不明通知の照合・復旧運用
 - pipeline状態の安全な可観測性とCron自然実行の運用確認
 - Markdownから安全なセマンティックHTMLへの変換
 - OGP画像、author、publisher、image等の構造化データ強化
@@ -512,6 +517,7 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
    - **完了:** Step 1 通信・失敗処理安全化
    - **完了:** Step 2 D1 idempotency、pipeline state、重複実行防止、Discord通知状態管理
    - **完了:** pipeline全体8分deadline、手動・Cron・全体の実行回数上限、deadline時の安全な状態遷移
+   - **実装済み・本番未反映:** stale run・`sending`の人間照合、監査記録、比較更新による復旧
 6. 最低限の自動テスト、型、デプロイ手順を整備
 
 **完了条件:** 公開、生成、保存、通知を安全かつ再現可能に運用できる。
@@ -568,10 +574,10 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 
 ## 13. 次の実行順序
 
-pipeline全体deadline・費用上限の本番反映完了後の優先作業は次のとおり。
+reconciliation実装完了後の優先作業は次のとおり。
 
-1. stale run・`notification_status=sending`・結果不明通知の安全な照合／reconciliation／復旧手順を整備する
-2. Secretや記事本文を露出しないpipeline observabilityを整備し、自然な本番Cron実行を継続監視する
+1. 差分レビュー、事前backup、明示承認後に`0003`とWorkerを本番反映する
+2. Secretや記事本文を露出しないpipeline observabilityを拡張し、自然な本番Cron実行を継続監視する
 3. 最低限の自動テスト実行方法、型チェック、デプロイ手順を標準化する
 
 ## 14. 意思決定ルール
@@ -694,6 +700,15 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 正式保存場所が確定するまでは、本ファイルを承認対象の原本として扱う。正式保存場所の決定後は、管理対象の原本を一つに定め、複製ファイルによる内容の分岐を防ぐ。
 
 ## 18. 変更履歴
+
+### v1.8 — 2026-08-10
+
+- stale runを自動失敗化・自動再開せず、人間照合が必要な状態として返すよう安全側へ変更
+- 認証済み`/pipeline-reconciliation`で、記事本文・Idempotency-Keyを露出しない分類一覧を追加
+- `sending`は送達結果不明として自動再送禁止を維持し、送達済みまたは確実に未送信の証拠がある場合だけ人間が比較更新できる設計を実装
+- 状態修復、送達確認、未送信確認はいずれも固有操作Key、根拠メモ、期待状態一致を必須化し、競合時はfail closed
+- 永続監査に既存schemaだけでは不足することを確認し、additiveな`0003_pipeline_reconciliation_audit.sql`を追加。既存run・記事のデータ変更は含めない
+- Step 1 44件、Step 2 40件、実SQLiteを用いたStep 3統合テストに成功。本番migration・deploy・状態変更は未実施
 
 ### v1.7 — 2026-08-10
 

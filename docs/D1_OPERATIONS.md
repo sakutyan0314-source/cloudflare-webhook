@@ -375,3 +375,39 @@ restore前に必ず現在状態をexportし、失われる時間範囲と書き�
 17. Master Blueprintの状態台帳と変更履歴を更新する。
 
 この順序の途中で差異、失敗、想定外のmigration、データ変化を検出した場合は、追加修正やrestoreを行わず停止する。
+
+## 22. stale run・Discord結果不明の照合と復旧
+
+### 22.1 絶対ルール
+
+- `notification_status='sending'` は送達結果不明であり、自動再送しない。
+- Discord上で送達済みか未送信かを判別できない場合、状態を変更せず人間判断待ちを維持する。
+- 記事本文、Idempotency-Key、Webhook URL、Secretを照合一覧や監査メモへ記録しない。
+- GETは分類だけを行い、pipeline状態を変更しない。
+- 復旧POSTはBearer認証、固有の`Reconciliation-Key`、10〜240文字の根拠メモを必須とする。
+- 同じ`Reconciliation-Key`の再実行は同じrun・actionに限り既存結果を返し、二重変更しない。
+
+### 22.2 読み取りと分類
+
+`GET /pipeline-reconciliation`を認証付きで呼び出す。最大100件の安全なメタデータだけを返し、記事本文とIdempotency-Keyは返さない。
+
+- `delivery_unknown_human_review`: Discord送達結果不明。自動操作禁止。
+- `stale_without_article_can_fail`: lease期限切れ、記事なし。ログで実行停止を確認後に失敗確定可能。
+- `saved_state_repair_available`: runはrunningだが紐付け記事あり。通知を送らずsaved境界へ修復可能。
+- `saved_unsent_manual_resume_required`: 記事保存済み・通知attempt前。別途、明示的な同一Key手動実行を行うまで送信しない。
+- `notification_failed_manual_review`: Discordが明確な失敗を返した状態。原因確認後だけ手動再実行を検討する。
+
+### 22.3 許可する状態変更
+
+`POST /pipeline-reconciliation`へ`runId`、`action`、`evidence`を送る。すべて比較更新であり、確認時から状態が変わっていれば409で停止する。
+
+- `mark_stale_failed`: `running/pending`、lease期限切れ、記事なしだけを`failed/pending`へ変更する。
+- `repair_saved_state`: `running/pending`かつ記事ありだけを`saved/pending`へ変更する。Discord送信は行わない。
+- `confirm_notification_delivered`: Discord上の送達を確認できた`saved/sending`だけを`completed/sent`へ変更する。
+- `confirm_notification_not_delivered`: Discord側の証拠で未送信を確定できた`saved/sending`だけを`saved/failed`へ変更する。この操作自体は再送しない。
+
+判断内容は`pipeline_reconciliation_events`へ永続記録する。`sending`のまま判別不能、対象記事不一致、証拠不足、409競合、DB応答不明の場合は追加操作を行わず、最新状態を再読込する。
+
+### 22.4 本番反映順序
+
+`0003_pipeline_reconciliation_audit.sql`は監査テーブルとINDEXだけを追加するadditive migrationである。既存runと記事は変更しない。ただしremote applyは本番変更のため、既存の事前read、bookmark、export、fingerprint、創業者承認をすべて完了してから行う。migration適用前のWorkerへ新コードをdeployしてはならない。適用後も状態変更POSTを本番確認目的で実行せず、まず認証・405・読み取り一覧・公開経路を確認する。

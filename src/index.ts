@@ -31,6 +31,8 @@ const GLOBAL_DAILY_LIMIT = 3;
 const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ERROR_SUMMARY_MAX_LENGTH = 160;
+const RECONCILIATION_NOTE_MAX_LENGTH = 240;
+const RECONCILIATION_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 class OperationError extends Error {
   constructor({ stage, provider, errorCode, httpStatus = null, retryable = false, attempt = 1 }) {
@@ -94,6 +96,14 @@ if (articleMatch) {
       const accessError = await authorizeOperationsRequest(request, env, "GET");
       if (accessError) return accessError;
       return handleViewLogs(env);
+    }
+    if (url.pathname === "/pipeline-reconciliation") {
+      const allowedMethod = request.method === "GET" ? "GET" : "POST";
+      const accessError = await authorizeOperationsRequest(request, env, allowedMethod);
+      if (accessError) return accessError;
+      return request.method === "GET"
+        ? handlePipelineReconciliationList(env)
+        : handlePipelineReconciliationAction(request, env);
     }
     if (url.pathname === "/test-discord") {
       const accessError = await authorizeOperationsRequest(request, env, "POST");
@@ -471,6 +481,182 @@ async function handleViewLogs(env) {
     return new Response(JSON.stringify({ status: "error", message: "Operation failed" }, null, 2), {
       status: 500,
       headers: PRIVATE_JSON_HEADERS
+    });
+  }
+}
+
+function classifyReconciliationRun(run, now) {
+  const hasArticle = Number(run.has_article) === 1;
+  const leaseExpired = Date.parse(run.lease_expires_at) <= now.getTime();
+  if (run.notification_status === "sending") return "delivery_unknown_human_review";
+  if (run.status === "running" && hasArticle) return "saved_state_repair_available";
+  if (run.status === "running" && leaseExpired) return "stale_without_article_can_fail";
+  if (run.status === "running") return "active_no_action";
+  if (run.status === "saved" && run.notification_status === "pending") {
+    return "saved_unsent_manual_resume_required";
+  }
+  if (run.status === "saved" && run.notification_status === "failed") {
+    return "notification_failed_manual_review";
+  }
+  return "no_action";
+}
+
+async function handlePipelineReconciliationList(env, runtime = {}) {
+  try {
+    const now = runtimeNow(runtime);
+    const { results } = await env.DB.prepare(
+      `SELECT r.id, r.trigger_type, r.status, r.stage, r.article_id,
+              r.notification_status, r.notification_attempt_count,
+              r.error_code, r.lease_expires_at, r.started_at, r.updated_at,
+              CASE WHEN c.id IS NULL THEN 0 ELSE 1 END AS has_article
+       FROM pipeline_runs r
+       LEFT JOIN curation_logs c ON c.pipeline_run_id = r.id
+       WHERE (r.status = 'running' AND r.lease_expires_at <= ?)
+          OR r.status = 'saved'
+          OR r.notification_status = 'sending'
+       ORDER BY r.updated_at ASC
+       LIMIT 100`
+    ).bind(now.toISOString()).all();
+    const runs = (results ?? []).map((run) => ({
+      ...run,
+      reconciliation_class: classifyReconciliationRun(run, now)
+    }));
+    return new Response(JSON.stringify({ status: "success", asOf: now.toISOString(), runs }, null, 2), {
+      headers: PRIVATE_JSON_HEADERS
+    });
+  } catch (error) {
+    logOperationFailure(error, "pipeline_reconciliation_list", "d1");
+    return new Response(JSON.stringify({ status: "error", message: "Operation failed" }), {
+      status: 500,
+      headers: PRIVATE_JSON_HEADERS
+    });
+  }
+}
+
+function reconciliationActionDefinition(action, nowIso) {
+  const definitions = {
+    mark_stale_failed: {
+      resultingStatus: "failed",
+      resultingNotificationStatus: "pending",
+      eligibility: "r.status = 'running' AND r.notification_status = 'pending' AND r.lease_expires_at <= ? AND NOT EXISTS (SELECT 1 FROM curation_logs c WHERE c.pipeline_run_id = r.id)",
+      eligibilityArgs: [nowIso],
+      update: `UPDATE pipeline_runs
+        SET status = 'failed', error_code = 'stale_run_reconciled_no_article',
+            error_retryable = 0, error_summary = 'worker:stale_run_reconciled_no_article',
+            updated_at = ?, failed_at = ?
+        WHERE id = ? AND status = 'running' AND notification_status = 'pending'
+          AND lease_expires_at <= ? AND NOT EXISTS
+            (SELECT 1 FROM curation_logs c WHERE c.pipeline_run_id = pipeline_runs.id)`,
+      updateArgs: [nowIso, nowIso]
+    },
+    repair_saved_state: {
+      resultingStatus: "saved",
+      resultingNotificationStatus: "pending",
+      eligibility: "r.status = 'running' AND r.notification_status = 'pending' AND EXISTS (SELECT 1 FROM curation_logs c WHERE c.pipeline_run_id = r.id)",
+      eligibilityArgs: [],
+      update: `UPDATE pipeline_runs
+        SET status = 'saved', stage = 'discord', notification_status = 'pending',
+            article_id = (SELECT id FROM curation_logs WHERE pipeline_run_id = pipeline_runs.id LIMIT 1),
+            saved_at = COALESCE(saved_at, ?), updated_at = ?
+        WHERE id = ? AND status = 'running' AND notification_status = 'pending'
+          AND EXISTS (SELECT 1 FROM curation_logs c WHERE c.pipeline_run_id = pipeline_runs.id)`,
+      updateArgs: [nowIso, nowIso]
+    },
+    confirm_notification_delivered: {
+      resultingStatus: "completed",
+      resultingNotificationStatus: "sent",
+      eligibility: "r.status = 'saved' AND r.notification_status = 'sending' AND EXISTS (SELECT 1 FROM curation_logs c WHERE c.pipeline_run_id = r.id)",
+      eligibilityArgs: [],
+      update: `UPDATE pipeline_runs
+        SET status = 'completed', stage = 'done', notification_status = 'sent',
+            notified_at = COALESCE(notified_at, ?), completed_at = ?, updated_at = ?,
+            error_code = NULL, error_http_status = NULL, error_retryable = 0, error_summary = NULL
+        WHERE id = ? AND status = 'saved' AND notification_status = 'sending'
+          AND EXISTS (SELECT 1 FROM curation_logs c WHERE c.pipeline_run_id = pipeline_runs.id)`,
+      updateArgs: [nowIso, nowIso, nowIso]
+    },
+    confirm_notification_not_delivered: {
+      resultingStatus: "saved",
+      resultingNotificationStatus: "failed",
+      eligibility: "r.status = 'saved' AND r.notification_status = 'sending' AND EXISTS (SELECT 1 FROM curation_logs c WHERE c.pipeline_run_id = r.id)",
+      eligibilityArgs: [],
+      update: `UPDATE pipeline_runs
+        SET status = 'saved', stage = 'discord', notification_status = 'failed',
+            error_code = 'manual_confirmed_not_delivered', error_retryable = 0,
+            error_summary = 'operator:manual_confirmed_not_delivered', updated_at = ?
+        WHERE id = ? AND status = 'saved' AND notification_status = 'sending'
+          AND EXISTS (SELECT 1 FROM curation_logs c WHERE c.pipeline_run_id = pipeline_runs.id)`,
+      updateArgs: [nowIso]
+    }
+  };
+  return definitions[action] ?? null;
+}
+
+async function handlePipelineReconciliationAction(request, env, runtime = {}) {
+  const operationKey = request.headers.get("Reconciliation-Key");
+  if (!operationKey || !RECONCILIATION_KEY_PATTERN.test(operationKey)) {
+    return new Response(JSON.stringify({ status: "error", message: "Valid Reconciliation-Key is required" }), {
+      status: 400, headers: PRIVATE_JSON_HEADERS
+    });
+  }
+  let input;
+  try {
+    input = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ status: "error", message: "Invalid JSON" }), {
+      status: 400, headers: PRIVATE_JSON_HEADERS
+    });
+  }
+  const runId = Number(input?.runId);
+  const action = input?.action;
+  const evidence = typeof input?.evidence === "string" ? input.evidence.trim() : "";
+  const nowIso = runtimeNow(runtime).toISOString();
+  const definition = reconciliationActionDefinition(action, nowIso);
+  if (!Number.isSafeInteger(runId) || runId < 1 || !definition || evidence.length < 10 || evidence.length > RECONCILIATION_NOTE_MAX_LENGTH) {
+    return new Response(JSON.stringify({ status: "error", message: "Invalid reconciliation request" }), {
+      status: 400, headers: PRIVATE_JSON_HEADERS
+    });
+  }
+  try {
+    const existing = await env.DB.prepare(
+      "SELECT pipeline_run_id, action FROM pipeline_reconciliation_events WHERE operation_key = ? LIMIT 1"
+    ).bind(operationKey).first();
+    if (existing) {
+      const matches = Number(existing.pipeline_run_id) === runId && existing.action === action;
+      return new Response(JSON.stringify({ status: matches ? "already_applied" : "conflict", runId, action }), {
+        status: matches ? 200 : 409, headers: PRIVATE_JSON_HEADERS
+      });
+    }
+    const eventInsert = env.DB.prepare(
+      `INSERT INTO pipeline_reconciliation_events
+        (operation_key, pipeline_run_id, action, previous_status,
+         previous_notification_status, resulting_status,
+         resulting_notification_status, evidence_summary, created_at)
+       SELECT ?, r.id, ?, r.status, r.notification_status, ?, ?, ?, ?
+       FROM pipeline_runs r WHERE r.id = ? AND ${definition.eligibility}`
+    ).bind(
+      operationKey, action, definition.resultingStatus,
+      definition.resultingNotificationStatus, evidence, nowIso, runId,
+      ...definition.eligibilityArgs
+    );
+    const stateUpdate = env.DB.prepare(definition.update).bind(
+      ...definition.updateArgs, runId, ...definition.eligibilityArgs
+    );
+    const [eventResult, updateResult] = await env.DB.batch([eventInsert, stateUpdate]);
+    if (statementChanges(eventResult) !== 1 || statementChanges(updateResult) !== 1) {
+      throw new OperationError({
+        stage: "pipeline_reconciliation", provider: "d1", errorCode: "state_conflict"
+      });
+    }
+    return new Response(JSON.stringify({ status: "applied", runId, action }), {
+      headers: PRIVATE_JSON_HEADERS
+    });
+  } catch (error) {
+    logOperationFailure(error, "pipeline_reconciliation_action", "d1");
+    const safe = normalizeOperationError(error, "pipeline_reconciliation", "d1");
+    const status = safe.errorCode === "state_conflict" ? 409 : 500;
+    return new Response(JSON.stringify({ status: "error", message: "Operation failed" }), {
+      status, headers: PRIVATE_JSON_HEADERS
     });
   }
 }
@@ -894,11 +1080,7 @@ async function handleExistingPipelineRun(env, run, specification, runtime = {}) 
       return { outcome: "notification_in_progress", runId: run.id, articleId: article.id };
     }
     if (run.status === "running") {
-      const nowIso = runtimeNow(runtime).toISOString();
-      await env.DB.prepare(
-        "UPDATE pipeline_runs SET status = 'saved', stage = 'discord', article_id = ?, saved_at = COALESCE(saved_at, ?), updated_at = ? WHERE id = ?"
-      ).bind(article.id, nowIso, nowIso, run.id).run();
-      run = await getPipelineRunByKey(env.DB, specification.idempotencyKey);
+      return { outcome: "reconciliation_required", runId: run.id, articleId: article.id };
     }
     if (run.notification_status === "sent") {
       return { outcome: "completed", runId: run.id, articleId: article.id };
@@ -910,13 +1092,7 @@ async function handleExistingPipelineRun(env, run, specification, runtime = {}) 
   }
 
   if (run.status === "running" && Date.parse(run.lease_expires_at) <= runtimeNow(runtime).getTime()) {
-    const staleError = new OperationError({
-      stage: run.stage,
-      provider: "worker",
-      errorCode: "stale_run_requires_reconciliation"
-    });
-    await markPipelineFailed(env.DB, run.id, staleError, run.stage, runtime);
-    return { outcome: "failed", runId: run.id, articleId: null };
+    return { outcome: "reconciliation_required", runId: run.id, articleId: null };
   }
   return { outcome: "in_progress", runId: run.id, articleId: null };
 }

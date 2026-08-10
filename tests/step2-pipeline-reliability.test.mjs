@@ -328,19 +328,20 @@ await test("active running run returns in_progress without external calls", asyn
   assert.equal(harness.calls.length, 0);
 });
 
-await test("stale running without article becomes reconciliation failure", async () => {
+await test("stale running without article requires reconciliation without mutation", async () => {
   const harness = createHarness();
   const run = harness.db.seedRun({
     idempotency_key: "manual:stale-empty",
     lease_expires_at: "2026-08-09T00:00:00.000Z"
   });
   const result = await runReliablePipeline(harness.env, manualSpecification("stale-empty"), harness.runtime);
-  assert.equal(result.outcome, "failed");
-  assert.equal(run.error_code, "stale_run_requires_reconciliation");
+  assert.equal(result.outcome, "reconciliation_required");
+  assert.equal(run.status, "running");
+  assert.equal(run.error_code, null);
   assert.equal(harness.calls.length, 0);
 });
 
-await test("running run with saved article resumes Discord only", async () => {
+await test("running run with saved article requires state repair without sending", async () => {
   const harness = createHarness();
   const run = harness.db.seedRun({
     idempotency_key: "manual:stale-saved",
@@ -348,9 +349,9 @@ await test("running run with saved article resumes Discord only", async () => {
   });
   harness.db.seedArticle({ pipeline_run_id: run.id, content: "already saved" });
   const result = await runReliablePipeline(harness.env, manualSpecification("stale-saved"), harness.runtime);
-  assert.equal(result.outcome, "completed");
-  assert.equal(harness.calls.filter((url) => url.includes("discord")).length, 1);
-  assert.equal(harness.calls.filter((url) => !url.includes("discord")).length, 0);
+  assert.equal(result.outcome, "reconciliation_required");
+  assert.equal(run.status, "running");
+  assert.equal(harness.calls.length, 0);
 });
 
 await test("ambiguous committed D1 batch is reconciled without duplicate article", async () => {
