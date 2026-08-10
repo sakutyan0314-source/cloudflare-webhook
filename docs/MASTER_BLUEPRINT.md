@@ -1,9 +1,9 @@
-# Master Blueprint v1.6
+# Master Blueprint v1.7
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.6
+**文書状態:** 正式基準文書 v1.7
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -141,6 +141,12 @@ D1保存失敗は呼び出し元へ伝播し、保存に成功しない限りDis
 
 Step 2では、D1の `pipeline_runs` と一意なidempotency keyを用いて、Cronと手動実行を別namespaceで管理する。Cronは `scheduledTime`、手動実行は検証済み `Idempotency-Key` を基準とし、run取得をD1のUNIQUE制約で原子的に競合解決する。状態は `running`、`saved`、`completed`、`failed` とstageで追跡し、記事保存後のDiscord通知状態も別管理する。完了済みrunの同一Key再送は既存結果を返し、新しいLLM実行、記事保存、通知を開始しない。
 
+pipeline全体の実行上限は8分とし、各外部通信には「stage固有timeout」と「pipeline全体の残り時間」の短い方を適用する。retry開始前にも残り時間を検査し、deadlineを越えるfetch、待機、retryを開始しない。AbortControllerで実通信とresponse本文読み取りを中断対象にし、Promise.raceだけに依存しない。
+
+実行回数はD1への条件付きINSERTで原子的かつfail closedに制限する。手動実行は同時active 1件、直近1時間1件、UTC日次2件、CronはUTC日次1件、全trigger合計はUTC日次3件までとする。同一idempotency keyの既存runは従来どおり再利用し、UNIQUE制約も二重防御として維持する。予算確認または条件付きINSERTに失敗した場合、手動経路は503、Cronは失敗をscheduled handlerへ伝播し、LLM、記事保存、Discordへ進まない。
+
+deadline超過が記事保存前ならrunを `failed` / `pipeline_deadline_exceeded` とし、Discordを送らない。記事保存後・Discord開始前なら記事を保持して `saved` / `discord` / `pending` とする。Discordのtimeoutまたはnetwork errorは配信結果が不明なため自動retryせず、`saved` / `discord` / `sending` のまま人間による照合対象とする。Discordの429・5xxだけは全体deadline内で最大3 attempts、LLMは最大2 attemptsとする。
+
 Discordは外部Webhookであるため厳密なexactly-onceを保証しない。`notification_status=sending` のまま結果不明となった場合は自動再送せず、人間による照合・復旧判断の対象とする。
 
 モデル名や外部API仕様は変更され得るため、稼働確認時には現在の公式仕様と実際の応答を再確認する。
@@ -264,8 +270,24 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
   - 7403対策としてWranglerコマンドを並列実行せず、deploy・migration前にD1 readを確認し、7403発生時は書き込みを停止して正常化確認後に改めて承認工程へ戻る
   - `OPERATIONS_API_TOKEN` は本番試験前に安全ローテーション済み。値はコード、Git、文書へ保存しない
   - Workers BuildsのGit repository未接続を維持し、Step 2実装pushでも新しいWorker Versionが作成されないことを確認
+- pipeline全体deadline・費用上限
+  - pipeline全体を8分に制限し、各通信でstage timeoutとglobal remainingの短い方を使用。retry前にも残り時間を検査し、deadline後のfetch・待機・retryを禁止
+  - AbortControllerで実通信を停止し、記事保存前のdeadline超過は `failed` / `pipeline_deadline_exceeded`、Discord非送信とする
+  - 記事保存後・Discord開始前のdeadline超過は記事を保持して `saved` / `discord` / `pending`、Discordのtimeout・network errorは結果不明として `saved` / `discord` / `sending` を維持し自動再送しない
+  - 手動実行はactive 1件、rolling hour 1件、UTC日次2件、CronはUTC日次1件、全trigger合計はUTC日次3件を上限とする
+  - 同一Cron `scheduledTime` と同一manual keyは既存runを返す。異なるkeyの競合はD1の原子的な条件付きINSERTで制限し、既存UNIQUE制約も維持
+  - 予算照会・条件付きINSERT失敗はfail closedとし、手動経路は503、Cronはscheduled handlerへ失敗を伝播
+  - LLMは最大2 attempts、Discordは429・5xxのみ最大3 attempts。deadlineを越えるretryは開始しない
+  - schema変更はなく、`0001_baseline.sql` と `0002_pipeline_reliability.sql` のみを維持。`0003`は作成していない
+  - Step 1 44件、Step 2 40件のローカルテスト、構文、差分、Wrangler dry-runに成功
+  - Worker Version 102、Version ID `84292c8f-b470-46a3-a2a9-b57322166dd5`、Deployment ID `58030c4e-5235-4255-8bb2-c50714a5df5d`、100% trafficで手動Wrangler本番反映・回帰確認に成功
+  - 本番D1はmigration `0001`・`0002`、8業務テーブル、60列、INDEX・UNIQUE 12、FK 2、fingerprint `a23ab033719d0dd1fe2ef6a0fc442954fe88bc15738534a22653a453d7f9f8d0` を維持
+  - 本番実測は `pipeline_runs` 2件、`curation_logs` 11件、紐付け済み記事2件。run 1はmanual・article 26、run 2は自然Cron・article 27で、いずれも `completed` / `done` / `sent`
+  - run 2は2026-08-09 23:00:13 UTCの自然Cronから起動し、Gemini→Claude→OpenAI→D1→Discordを約72秒で完走。8分deadlineと日次上限内であることを確認
+  - 本番反映前の復旧基準はTime Travel bookmark `000000ae-00000000-000050c3-15e794944ca3c56ca998d1a9267272d2` とGit管理外export `/Users/hashimotoyuma/D1_BACKUPS/zero-capital-insight-db_20260810-041208_pre-deadline-budget-deploy.sql`。サイズ56,310 bytes、SHA-256 `b54157fc2461b81826ae7562bb40b72b99d839d9fcd2ac6617fe27b77a7fc797`
+  - Workers Builds切断を維持し、Git pushと本番デプロイを分離。Cloudflare D1 API 7403発生時は書き込み・deployへ進まず停止する安全方針も維持
 
-最新の本番確認時Worker Version IDは `9e0e5d18-033c-4820-be12-f6f19ccf469c`（Step 2コード、100% traffic）、Deployment IDは `20cef0df-93c5-4704-bf65-122e5080ab4c`。過去のVersion IDは変更履歴上の確認値として維持する。
+最新の本番確認時Worker Versionは102、Version IDは `84292c8f-b470-46a3-a2a9-b57322166dd5`（100% traffic）、Deployment IDは `58030c4e-5235-4255-8bb2-c50714a5df5d`。過去のVersion IDは変更履歴上の確認値として維持する。
 
 ### 6.2 Gitで確定済み
 
@@ -277,6 +299,7 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 - D1 baseline・復旧基盤コミット: `e09780a`（`Add D1 baseline migration and recovery guide`）
 - 通信・失敗処理安全化 Step 1コミット: `20799ab`（`Harden pipeline failure handling`）
 - D1 idempotency・pipeline state Step 2コミット: `098e820`（`Add pipeline idempotency and reliability state`）
+- pipeline全体deadline・費用上限コミット: `ab756f7`（`Add pipeline deadline and execution limits`）
 - 上記時点で `main` と `origin/main` は 0 ahead / 0 behind
 
 ### 6.3 実装済み・未コミット・本番未反映
@@ -293,7 +316,6 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 
 ### 6.5 未実装または未完成
 
-- pipeline全体deadlineと費用上限
 - stale run、`notification_status=sending`、結果不明通知の照合・復旧運用
 - pipeline状態の安全な可観測性とCron自然実行の運用確認
 - Markdownから安全なセマンティックHTMLへの変換
@@ -489,6 +511,7 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 5. **完了:** 保存失敗、外部API失敗、重複実行への対応
    - **完了:** Step 1 通信・失敗処理安全化
    - **完了:** Step 2 D1 idempotency、pipeline state、重複実行防止、Discord通知状態管理
+   - **完了:** pipeline全体8分deadline、手動・Cron・全体の実行回数上限、deadline時の安全な状態遷移
 6. 最低限の自動テスト、型、デプロイ手順を整備
 
 **完了条件:** 公開、生成、保存、通知を安全かつ再現可能に運用できる。
@@ -545,11 +568,11 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 
 ## 13. 次の実行順序
 
-Step 2 D1 idempotency・pipeline state完了後の優先作業は次のとおり。
+pipeline全体deadline・費用上限の本番反映完了後の優先作業は次のとおり。
 
-1. pipeline全体deadlineと費用上限を設計し、stale run・`notification_status=sending`・結果不明通知の安全な照合／復旧手順を整備する
-2. Secretや記事本文を露出しないpipeline状態確認・observabilityを整備し、次回の自然な本番Cron実行を読み取り確認する
-3. 最低限の自動テスト実行方法、型、デプロイ手順を整備する
+1. stale run・`notification_status=sending`・結果不明通知の安全な照合／reconciliation／復旧手順を整備する
+2. Secretや記事本文を露出しないpipeline observabilityを整備し、自然な本番Cron実行を継続監視する
+3. 最低限の自動テスト実行方法、型チェック、デプロイ手順を標準化する
 
 ## 14. 意思決定ルール
 
@@ -671,6 +694,20 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 正式保存場所が確定するまでは、本ファイルを承認対象の原本として扱う。正式保存場所の決定後は、管理対象の原本を一つに定め、複製ファイルによる内容の分岐を防ぐ。
 
 ## 18. 変更履歴
+
+### v1.7 — 2026-08-10
+
+- pipeline全体8分deadlineを導入し、stage timeoutとglobal remainingの短い方をAbortControllerへ適用。deadline後のfetch、待機、retryを禁止
+- deadline超過を保存前は `failed` / `pipeline_deadline_exceeded`、保存後は `saved` / `discord` / `pending`、Discord結果不明は `saved` / `discord` / `sending` として安全に保持
+- 手動active 1件・rolling hour 1件・UTC日次2件、Cron UTC日次1件、全trigger UTC日次3件の上限をD1条件付きINSERTで原子的・fail closedに適用
+- LLM最大2 attempts、Discord 429・5xx最大3 attemptsを維持し、deadlineを越えるretryを開始しない構成を確認
+- migration追加なし。`0001`・`0002`、schema fingerprint、8テーブル・60列・INDEX/UNIQUE 12・FK 2を維持
+- Step 1 44件・Step 2 40件、構文、差分、dry-runに成功し、Worker Version 102、Version ID `84292c8f-b470-46a3-a2a9-b57322166dd5`、Deployment ID `58030c4e-5235-4255-8bb2-c50714a5df5d`、100% trafficで本番反映
+- 本番D1はpipeline_runs 2件、curation_logs 11件、紐付け2件。manual run 1/article 26と自然Cron run 2/article 27がともにcompleted・done・sent
+- 自然Cron run 2は2026-08-09 23:00:13 UTCに起動し、全pipelineを約72秒で完走
+- Time Travel bookmarkとGit管理外のschema＋data exportを復旧基準として確保し、Workers Builds切断、7403時の停止方針、Git pushと手動deployの分離を維持
+- 実装・テストをコミット `ab756f7` としてGit保存し、pushで新しいWorker Versionが作成されないことを確認
+- 次の正式作業をstale/sending reconciliation、pipeline observability、自然Cron継続監視、自動テスト・型・デプロイ標準化へ更新
 
 ### v1.6 — 2026-08-10
 
