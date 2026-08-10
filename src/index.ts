@@ -79,9 +79,13 @@ Sitemap: ${siteUrl}/sitemap.xml
     });
   }
 }
-if (url.pathname === "/robots.txt") {
+    if (url.pathname === "/robots.txt") {
   return handleRobots(env);
 }
+    const categoryMatch = url.pathname.match(/^\/category\/([a-z-]+)\/?$/);
+    if (categoryMatch) {
+      return handleCategoryPage(env, categoryMatch[1]);
+    }
     const articleMatch = url.pathname.match(/^\/article\/(\d+)\/?$/);
 
 if (articleMatch) {
@@ -488,6 +492,116 @@ function categoryLabel(category) {
   return labels[category] || labels.uncategorized;
 }
 
+function isPublicArticle(article) {
+  return article.seoStatus !== "needs_review";
+}
+
+function isPublicCategory(category) {
+  return SEO_CATEGORIES.has(category) && category !== "uncategorized";
+}
+
+function categoryUrl(siteUrl, category) {
+  return `${siteUrl}/category/${category}`;
+}
+
+function sortArticlesByUpdatedAt(articles) {
+  return [...articles].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+}
+
+function categoryArticles(rows, category) {
+  return sortArticlesByUpdatedAt(
+    (rows ?? []).map((row) => readSeoArticle(row)).filter((article) =>
+      isPublicArticle(article) && article.category === category
+    )
+  );
+}
+
+function relatedArticles(rows, article) {
+  if (!isPublicCategory(article.category)) return [];
+  return categoryArticles(rows, article.category)
+    .filter((candidate) => candidate.id !== article.id)
+    .slice(0, 3);
+}
+
+function jsonLd(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function breadcrumbJsonLd(siteUrl, items) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: items.map((item, index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      name: item.name,
+      item: item.url
+    }))
+  };
+}
+
+function renderBreadcrumb(items) {
+  return `<nav class="breadcrumb" aria-label="パンくずリスト">${items.map((item, index) =>
+    index === items.length - 1
+      ? `<span aria-current="page">${escapeHtml(item.name)}</span>`
+      : `<a href="${escapeHtml(item.url)}">${escapeHtml(item.name)}</a>`
+  ).join("<span class=\"breadcrumb-separator\" aria-hidden=\"true\">›</span>")}</nav>`;
+}
+
+function articleBreadcrumb(siteUrl, article) {
+  const items = [{ name: "ホーム", url: `${siteUrl}/` }];
+  if (isPublicCategory(article.category)) {
+    items.push({ name: categoryLabel(article.category), url: categoryUrl(siteUrl, article.category) });
+  }
+  items.push({ name: article.title, url: `${siteUrl}/article/${article.id}` });
+  return items;
+}
+
+function renderRelatedArticles(articles) {
+  if (articles.length === 0) return "";
+  return `<section class="related-articles" aria-labelledby="related-articles-heading">
+  <h2 id="related-articles-heading">関連記事</h2>
+  <ul>${articles.map((article) => `<li><a href="/article/${escapeHtml(String(article.id))}">${escapeHtml(article.title)}</a></li>`).join("")}</ul>
+</section>`;
+}
+
+async function handleCategoryPage(env, category) {
+  try {
+    if (!isPublicCategory(category)) return nonPublicArticleResponse();
+    const siteUrl = getSiteUrl(env);
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM curation_logs ORDER BY id DESC LIMIT 1000"
+    ).all();
+    const articles = categoryArticles(results, category);
+    if (articles.length === 0) return nonPublicArticleResponse();
+    const label = categoryLabel(category);
+    const canonicalUrl = categoryUrl(siteUrl, category);
+    const pageTitle = `${label}の記事一覧 | テクノロジー＆ビジネストレンド最速まとめ速報`;
+    const description = `${label}に関する記事一覧です。AI、SaaS、セキュリティなどの最新動向を整理してお届けします。`;
+    const breadcrumbs = [
+      { name: "ホーム", url: `${siteUrl}/` },
+      { name: label, url: canonicalUrl }
+    ];
+    const posts = articles.map((article) => `<article class="post">
+  <h2><a href="/article/${escapeHtml(String(article.id))}">${escapeHtml(article.title)}</a></h2>
+  <p>${escapeHtml(article.description)}</p>
+  <a href="/article/${escapeHtml(String(article.id))}">続きを読む &rarr;</a>
+</article>`).join("");
+    const html = `<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeHtml(pageTitle)}</title><meta name="description" content="${escapeHtml(description)}">
+<link rel="canonical" href="${canonicalUrl}">
+<meta property="og:type" content="website"><meta property="og:title" content="${escapeHtml(pageTitle)}"><meta property="og:description" content="${escapeHtml(description)}"><meta property="og:url" content="${canonicalUrl}">
+<meta name="twitter:card" content="summary"><meta name="twitter:title" content="${escapeHtml(pageTitle)}"><meta name="twitter:description" content="${escapeHtml(description)}">
+<script type="application/ld+json">${jsonLd(breadcrumbJsonLd(siteUrl, breadcrumbs))}</script>
+</head><body><main><h1>${escapeHtml(label)}の記事一覧</h1>${renderBreadcrumb(breadcrumbs)}<div class="posts">${posts}</div></main></body></html>`;
+    return new Response(html, { headers: HTML_HEADERS });
+  } catch (error) {
+    logOperationFailure(error, "category_page", "worker");
+    return new Response("記事の読み込み中にエラーが発生しました。", { status: 500, headers: TEXT_HEADERS });
+  }
+}
+
 async function handleArticlePage(env, articleId) {
   try {
     const siteUrl = getSiteUrl(env);
@@ -521,6 +635,18 @@ async function handleArticlePage(env, articleId) {
     const affiliateUrl =
       `https://www.amazon.co.jp/s?k=${encodeURIComponent(keyword)}&tag=${encodeURIComponent(affiliateTag)}`;
 const canonicalUrl = `${siteUrl}/article/${id}`;
+    const breadcrumbs = articleBreadcrumb(siteUrl, article);
+    let related = [];
+    if (isPublicCategory(article.category)) {
+      try {
+        const { results } = await env.DB.prepare(
+          "SELECT * FROM curation_logs ORDER BY id DESC LIMIT 1000"
+        ).all();
+        related = relatedArticles(results, article);
+      } catch (error) {
+        logOperationFailure(error, "related_articles", "d1");
+      }
+    }
     const html = `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -540,7 +666,7 @@ const canonicalUrl = `${siteUrl}/article/${id}`;
 <meta name="twitter:title" content="${escapeHtml(pageTitle)}">
 <meta name="twitter:description" content="${escapeHtml(description)}">
 <script type="application/ld+json">
-${JSON.stringify({
+${jsonLd({
   "@context": "https://schema.org",
   "@type": "Article",
   headline: pageTitle,
@@ -553,7 +679,10 @@ ${JSON.stringify({
     "@id": canonicalUrl
   },
   url: canonicalUrl
-}).replace(/</g, "\\u003c")}
+})}
+</script>
+<script type="application/ld+json">
+${jsonLd(breadcrumbJsonLd(siteUrl, breadcrumbs))}
 </script>
   <style>
     body {
@@ -601,10 +730,17 @@ ${JSON.stringify({
       border: 1px solid #ffeeba;
       border-radius: 6px;
     }
+
+    .breadcrumb { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; font-size: 13px; }
+    .breadcrumb-separator { color: #777; }
+    .related-articles { margin-top: 32px; padding-top: 20px; border-top: 1px solid #eaeaea; }
+    .related-articles h2 { font-size: 20px; }
+    .related-articles li { margin: 8px 0; }
   </style>
 </head>
 <body>
   <main class="container">
+    ${renderBreadcrumb(breadcrumbs)}
     <a class="back-link" href="/">← 記事一覧へ戻る</a>
 
     <article>
@@ -624,6 +760,7 @@ ${JSON.stringify({
           rel="nofollow"
         >Amazonで最新商品をチェックする</a>
       </div>
+      ${renderRelatedArticles(related)}
     </article>
   </main>
 </body>
@@ -1490,9 +1627,10 @@ async function handleSitemap(env) {
       "SELECT * FROM curation_logs ORDER BY id DESC LIMIT 1000"
     ).all();
 
-    const articleUrls = (results ?? [])
+    const publicArticles = (results ?? [])
       .map((row) => readSeoArticle(row))
-      .filter((article) => article.seoStatus !== "needs_review")
+      .filter((article) => isPublicArticle(article));
+    const articleUrls = publicArticles
       .map((article) => {
       const lastmod = article.updatedAt
         ? new Date(article.updatedAt).toISOString()
@@ -1507,6 +1645,21 @@ async function handleSitemap(env) {
   </url>`;
       }).join("");
 
+    const categoryUrls = [...new Set(publicArticles.map((article) => article.category))]
+      .filter((category) => isPublicCategory(category))
+      .sort()
+      .map((category) => {
+        const articles = publicArticles.filter((article) => article.category === category);
+        const lastmod = new Date(Math.max(...articles.map((article) => Date.parse(article.updatedAt)))).toISOString();
+        return `
+  <url>
+    <loc>${categoryUrl(siteUrl, category)}</loc>
+    <lastmod>${lastmod}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>`;
+      }).join("");
+
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
@@ -1515,6 +1668,7 @@ async function handleSitemap(env) {
     <priority>1.0</priority>
   </url>
 ${articleUrls}
+${categoryUrls}
 </urlset>`;
 
     return new Response(xml, {
