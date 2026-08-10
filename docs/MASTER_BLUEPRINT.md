@@ -287,7 +287,7 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
   - 本番反映前の復旧基準はTime Travel bookmark `000000ae-00000000-000050c3-15e794944ca3c56ca998d1a9267272d2` とGit管理外export `/Users/hashimotoyuma/D1_BACKUPS/zero-capital-insight-db_20260810-041208_pre-deadline-budget-deploy.sql`。サイズ56,310 bytes、SHA-256 `b54157fc2461b81826ae7562bb40b72b99d839d9fcd2ac6617fe27b77a7fc797`
   - Workers Builds切断を維持し、Git pushと本番デプロイを分離。Cloudflare D1 API 7403発生時は書き込み・deployへ進まず停止する安全方針も維持
 
-最新の本番確認時Worker Versionは102、Version IDは `84292c8f-b470-46a3-a2a9-b57322166dd5`（100% traffic）、Deployment IDは `58030c4e-5235-4255-8bb2-c50714a5df5d`。過去のVersion IDは変更履歴上の確認値として維持する。
+最新の本番確認時Worker Version IDは `2677311e-07e7-43ec-bac4-be763effc418`（Traffic 100%）である。過去のVersion IDとDeployment IDは変更履歴上の確認値として維持する。
 
 ### 6.2 Gitで確定済み
 
@@ -302,15 +302,15 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 - pipeline全体deadline・費用上限コミット: `ab756f7`（`Add pipeline deadline and execution limits`）
 - 上記時点で `main` と `origin/main` は 0 ahead / 0 behind
 
-### 6.3 実装済み・未コミット・本番未反映
+### 6.3 reconciliation実装済み・本番反映済み・安定確認済み
 
 - stale runとDiscord結果不明通知を分類する認証済み`/pipeline-reconciliation` GET/POSTを実装
 - GETは記事本文・Idempotency-Keyを返さず、状態変更もしない
 - stale runは同一Keyの再呼び出しでも自動失敗化・自動再開せず、`reconciliation_required`で停止
 - `sending`は自動再送せず、送達済み・確実に未送信を人間が確認できた場合だけ比較更新を許可
-- `0003_pipeline_reconciliation_audit.sql`で監査イベントテーブルを追加。既存run・記事の更新は含まない
+- `0003_pipeline_reconciliation_audit.sql`を本番D1へ適用し、監査イベントテーブルを追加。既存run・記事は変更していない
 - 状態変更は固有`Reconciliation-Key`、根拠メモ、期待状態の一致を必須とし、競合は409で停止
-- Step 1 44件、Step 2 40件、Step 3 reconciliationローカル統合テストに成功。本番migration・deploy・状態変更は未実施
+- Step 1 44件、Step 2 40件、Step 3 reconciliationローカル統合テストに成功。Worker Version ID `2677311e-07e7-43ec-bac4-be763effc418`をTraffic 100%で本番稼働し、安定確認済み
 
 ### 6.4 意図的に保持している未追跡ファイル
 
@@ -574,11 +574,11 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 
 ## 13. 次の実行順序
 
-reconciliation実装完了後の優先作業は次のとおり。
+reconciliation本番反映・安定確認完了後の優先作業は次のとおり。
 
-1. 差分レビュー、事前backup、明示承認後に`0003`とWorkerを本番反映する
-2. Secretや記事本文を露出しないpipeline observabilityを拡張し、自然な本番Cron実行を継続監視する
-3. 最低限の自動テスト実行方法、型チェック、デプロイ手順を標準化する
+1. Secretや記事本文を露出しないpipeline observabilityを拡張し、自然な本番Cron実行を継続監視する
+2. 最低限の自動テスト実行方法、型チェック、デプロイ手順を標準化する
+3. v1.9 SEO強化フェーズとして、記事の正規コンテンツ構造を整備する
 
 ## 14. 意思決定ルール
 
@@ -708,7 +708,7 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 - `sending`は送達結果不明として自動再送禁止を維持し、送達済みまたは確実に未送信の証拠がある場合だけ人間が比較更新できる設計を実装
 - 状態修復、送達確認、未送信確認はいずれも固有操作Key、根拠メモ、期待状態一致を必須化し、競合時はfail closed
 - 永続監査に既存schemaだけでは不足することを確認し、additiveな`0003_pipeline_reconciliation_audit.sql`を追加。既存run・記事のデータ変更は含めない
-- Step 1 44件、Step 2 40件、実SQLiteを用いたStep 3統合テストに成功。本番migration・deploy・状態変更は未実施
+- Step 1 44件、Step 2 40件、実SQLiteを用いたStep 3統合テストに成功。`0003_pipeline_reconciliation_audit.sql`を本番適用し、Worker Version ID `2677311e-07e7-43ec-bac4-be763effc418`をTraffic 100%で稼働、安定確認済み
 
 ### v1.7 — 2026-08-10
 
