@@ -1,0 +1,25 @@
+{
+  "page_daily": {
+    "start_date": "2026-08-01",
+    "end_date": "2026-08-01",
+    "row_limit": 10,
+    "response": {
+      "rows": [
+        {"keys": ["2026-08-01", "https://example.test/article/17"], "clicks": 3, "impressions": 30, "ctr": 0.1, "position": 4.5},
+        {"keys": ["2026-08-01", "https://example.test/category/ai-automation"], "clicks": 1, "impressions": 20, "ctr": 0.05, "position": 8.2},
+        {"keys": ["2026-08-01", "https://example.test/?page=2"], "clicks": 0, "impressions": 4, "ctr": 0.0, "position": 10.0}
+      ]
+    }
+  },
+  "query_page_daily": {
+    "start_date": "2026-08-01",
+    "end_date": "2026-08-01",
+    "row_limit": 10,
+    "response": {
+      "rows": [
+        {"keys": ["2026-08-01", "private fixture query", "https://example.test/article/17"], "clicks": 2, "impressions": 10, "ctr": 0.2, "position": 3.0},
+        {"keys": ["2026-08-01", "another private fixture query", "https://example.test/other"], "clicks": 0, "impressions": 2, "ctr": 0.0, "position": 14.0}
+      ]
+    }
+  }
+}
