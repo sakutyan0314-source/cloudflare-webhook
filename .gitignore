@@ -8,6 +8,11 @@ node_modules/
 .dev.vars*
 .env*
 
+# Google service-account credentials (must remain outside this repository)
+service-account*.json
+*service-account-key*.json
+google-service-account*.json
+
 # macOS
 .DS_Store
 Library/
