@@ -701,6 +701,14 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 
 ## 18. 変更履歴
 
+### v1.9.2-A — 2026-08-11
+
+- SEO内部構造強化を本番反映。Worker Version ID `7174dc3e-7851-4352-8d58-2f6079a48e4b` をTraffic 100%で稼働した
+- `/category/ai-automation` と `/category/saas-cloud` の公開、カテゴリページのcanonicalとBreadcrumbList、記事ページのパンくず・Article JSON-LD・BreadcrumbListを確認した
+- `/sitemap.xml` に公開カテゴリURLが追加され、対象カテゴリの掲載を確認した。既存記事URLと一覧抜粋表示を維持している
+- 本番D1のSEO状態は `ready=4`、`legacy=8`、`needs_review=0`。`pipeline_runs=3`、最新Cron runのDiscord通知は `sent`、`pipeline_reconciliation_events=0` を確認した
+- migration、Worker設定、本文、pipeline、reconciliationの変更は含めない
+
 ### v1.9.1-A — 2026-08-10
 
 - SEO記事基盤（`0004_seo_article_foundation.sql`）を利用し、承認済みmanifestに限定して既存legacy記事 ID 17 / 20 / 26 を本番backfillした。3件を `ready` 化し、状態内訳は `ready=3`、`legacy=8`、`needs_review=0` とした
