@@ -433,3 +433,29 @@ node scripts/v1.9.1-seo-backfill-dry-run.mjs \
 - D1メタデータが`changed_db=false`かつ`rows_written=0`であること
 
 実行時はmanifestの完全コピーとSHA-256、本文を含まないdry-run監査JSONとSHA-256を、Git管理外の`--audit-dir`へ権限600で保存する。監査ディレクトリにプロジェクト内のパスを指定してはならない。dry-runが1件でも不合格なら、更新処理を実装・実行せず停止する。
+
+## 24. Search Console観測用D1 REST batch原子性検証
+
+2026-08-11に、非本番専用D1 `search-console-observability-batch-test`（ID: `3539194a-9b6a-49d1-bc73-dda422b6ab74`）で、Cloudflare D1 REST Query API batchの原子性を検証した。本番D1 `zero-capital-insight-db`（ID: `99ef2162-afd8-459a-87eb-d197127528e2`）とはID不一致を事前確認し、専用の短期REST API tokenだけを使用した。Wrangler OAuth、本番D1、Search Console API、Worker、Cron、pipeline、Discordは使用していない。
+
+- `search_console_sync_runs`への正常INSERTの後、同一batchでmetricsのCHECK制約違反を意図的に発生させたところ、3観測テーブルの件数はすべて0件だった。
+- 正常control batchでは、sync runが1件、page daily metricsが1件、query/page daily metricsが0件になった。
+- `PRAGMA foreign_key_check`は0件で、想定外のschema変更はなかった。
+
+この結果は将来のwriter実装におけるbatch設計の検証証跡である。ただし、本番保存前には本番D1固有のbackup、identity確認、最小対象での明示承認を別途完了しなければならない。非本番DBの削除と検証用tokenの失効は、別途承認されるまで行わない。
+
+## 25. v1.10-A 初回 `page_daily` 本番投入
+
+2026-08-12に、Search Console観測レイヤーの初回`page_daily`投入を本番D1へ1回だけ実行した。対象は`https://cloudflare-webhook.tyansaku3325.workers.dev/`のURL-prefix propertyであり、Search Console APIは`permissionLevel='siteFullUser'`を返した。保存専用の短期D1 REST API tokenを一時利用し、処理後に破棄した。
+
+- 対象期間: 2026-08-08〜2026-08-09
+- dimensions: `date`, `page`
+- row limit: 10
+- `query_page_daily`は実行していない。
+- 取得・保存件数はともに2件で、article 1件、top 1件だった。origin不一致とURL正規化除外は0件だった。
+- `search_console_sync_runs`は1件追加され、statusは`succeeded`、`rows_received=2`、`rows_saved=2`だった。
+- `search_console_page_daily_metrics`は2件追加され、D1確定`sync_run_id`との外部キー整合を確認した。
+- `search_console_query_page_daily_metrics`の追加は0件、`PRAGMA foreign_key_check`は0件だった。
+- pipeline、reconciliation、`notification_status='sending'`、Worker、Cron、Discord、migrationに変更はない。
+
+投入前にTime Travel bookmark、Git管理外export、SHA-256、権限600、隔離SQLite復元、0001〜0005と0005観測schema、初回idempotency key未使用を確認済みである。以後の再実行は同じidempotency keyでは冪等スキップとし、別期間の投入は個別承認を必要とする。

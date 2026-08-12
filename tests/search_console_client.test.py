@@ -60,6 +60,26 @@ class SearchConsoleClientTest(unittest.TestCase):
         self.sites.list.assert_called_once_with()
         self.sites_request.execute.assert_called_once_with()
 
+    def test_property_permission_uses_the_official_permission_level_field(self):
+        self.sites_request.execute.return_value = {
+            "siteEntry": [{
+                "siteUrl": "https://example.com/",
+                "permissionLevel": "siteFullUser",
+                "permission": None,
+            }]
+        }
+        self.assertEqual("siteFullUser", self.client.property_permission_level())
+
+    def test_property_permission_rejects_missing_property_or_unusable_permission_level(self):
+        self.sites_request.execute.return_value = {"siteEntry": []}
+        with self.assertRaises(search_console_client.SearchConsoleConfigurationError):
+            self.client.property_permission_level()
+        self.sites_request.execute.return_value = {
+            "siteEntry": [{"siteUrl": "https://example.com/", "permissionLevel": "siteUnverifiedUser"}]
+        }
+        with self.assertRaises(search_console_client.SearchConsoleConfigurationError):
+            self.client.property_permission_level()
+
     def test_invalid_dates_dimensions_and_pagination_are_rejected_before_api_call(self):
         invalid_cases = [
             lambda: self.client.query_search_analytics("2026-08-11", "2026-08-10"),

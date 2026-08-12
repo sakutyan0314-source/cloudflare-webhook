@@ -1,0 +1,10 @@
+[
+  {"metric_date":"2026-08-04","page_url":"https://example.test/article/17","url_kind":"article","article_id":17,"clicks":1,"impressions":10,"ctr":0.1,"position":8,"observed_at":"2026-08-12T00:00:00.000Z"},
+  {"metric_date":"2026-08-05","page_url":"https://example.test/article/17","url_kind":"article","article_id":17,"clicks":1,"impressions":10,"ctr":0.1,"position":8,"observed_at":"2026-08-12T00:00:00.000Z"},
+  {"metric_date":"2026-08-06","page_url":"https://example.test/article/17","url_kind":"article","article_id":17,"clicks":3,"impressions":20,"ctr":0.15,"position":5,"observed_at":"2026-08-12T00:00:00.000Z"},
+  {"metric_date":"2026-08-07","page_url":"https://example.test/article/17","url_kind":"article","article_id":17,"clicks":3,"impressions":20,"ctr":0.15,"position":5,"observed_at":"2026-08-12T00:00:00.000Z"},
+  {"metric_date":"2026-08-04","page_url":"https://example.test/","url_kind":"top","article_id":null,"clicks":4,"impressions":20,"ctr":0.2,"position":4,"observed_at":"2026-08-12T00:00:00.000Z"},
+  {"metric_date":"2026-08-05","page_url":"https://example.test/","url_kind":"top","article_id":null,"clicks":4,"impressions":20,"ctr":0.2,"position":4,"observed_at":"2026-08-12T00:00:00.000Z"},
+  {"metric_date":"2026-08-06","page_url":"https://example.test/","url_kind":"top","article_id":null,"clicks":2,"impressions":10,"ctr":0.2,"position":6,"observed_at":"2026-08-12T00:00:00.000Z"},
+  {"metric_date":"2026-08-07","page_url":"https://example.test/","url_kind":"top","article_id":null,"clicks":2,"impressions":10,"ctr":0.2,"position":6,"observed_at":"2026-08-12T00:00:00.000Z"}
+]

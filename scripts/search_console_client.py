@@ -17,6 +17,9 @@ ALLOWED_DIMENSIONS = frozenset(
     {"date", "query", "page", "country", "device", "searchAppearance"}
 )
 DEFAULT_SEARCH_TYPE = "web"
+PROPERTY_PERMISSION_LEVELS = frozenset(
+    {"siteOwner", "siteFullUser", "siteRestrictedUser"}
+)
 
 
 class SearchConsoleConfigurationError(ValueError):
@@ -96,6 +99,30 @@ class SearchConsoleClient:
     def list_sites(self) -> Mapping[str, Any]:
         """Return Search Console properties accessible to this identity."""
         return self._service.sites().list().execute()
+
+    def property_permission_level(self) -> str:
+        """Return the API-confirmed permission level for the configured property.
+
+        Search Console Sites resources use ``permissionLevel`` (not
+        ``permission``).  URL-prefix matching is intentionally exact because
+        the configured URL is itself the canonical property identifier.
+        """
+        response = self.list_sites()
+        entries = response.get("siteEntry", []) if isinstance(response, Mapping) else []
+        matches = [
+            entry for entry in entries
+            if isinstance(entry, Mapping) and entry.get("siteUrl") == self._property_url
+        ]
+        if len(matches) != 1:
+            raise SearchConsoleConfigurationError(
+                "configured Search Console URL-prefix property is unavailable"
+            )
+        level = matches[0].get("permissionLevel")
+        if level not in PROPERTY_PERMISSION_LEVELS:
+            raise SearchConsoleConfigurationError(
+                "configured Search Console property has no usable permissionLevel"
+            )
+        return str(level)
 
     def query_search_analytics(
         self,
