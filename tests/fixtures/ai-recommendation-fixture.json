@@ -1,0 +1,4 @@
+{
+  "article": {"article_id": 17, "category": "ai-automation", "title": "AI自動化の基礎", "description": "AI自動化を解説します。", "published_at": "2026-07-01T00:00:00.000Z", "updated_at": "2026-08-01T00:00:00.000Z", "article_age_days": 43, "h2_headings": ["概要", "導入方法"]},
+  "observation": {"period": {"start": "2026-08-01", "end": "2026-08-14"}, "previous_period": {"start": "2026-07-18", "end": "2026-07-31"}, "impressions": 100, "search_clicks": 1, "ctr": 0.01, "position": 12.0, "affiliate_click_count": 0, "affiliate_click_rate": 0.0, "search_affiliate_classification": "traffic_only", "trend": "stable", "observation_days": 14}
+}
