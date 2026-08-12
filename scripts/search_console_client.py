@@ -100,6 +100,11 @@ class SearchConsoleClient:
         """Return Search Console properties accessible to this identity."""
         return self._service.sites().list().execute()
 
+    @property
+    def property_url(self) -> str:
+        """Configured exact URL-prefix property, without exposing credentials."""
+        return self._property_url
+
     def property_permission_level(self) -> str:
         """Return the API-confirmed permission level for the configured property.
 

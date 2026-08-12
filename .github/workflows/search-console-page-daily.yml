@@ -1,0 +1,35 @@
+name: Search Console page daily
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  collect-page-daily:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --requirement requirements.txt
+      - name: Collect settled page_daily metrics
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.SEARCH_CONSOLE_D1_ACCOUNT_ID }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.SEARCH_CONSOLE_D1_DATABASE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.SEARCH_CONSOLE_D1_WRITE_TOKEN }}
+          SEARCH_CONSOLE_PROPERTY_URL: ${{ secrets.SEARCH_CONSOLE_PROPERTY_URL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          key_path="$RUNNER_TEMP/search-console-service-account.json"
+          trap 'rm -f "$key_path"' EXIT
+          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$key_path"
+          chmod 600 "$key_path"
+          export GOOGLE_APPLICATION_CREDENTIALS="$key_path"
+          python scripts/search_console_page_daily_job.py

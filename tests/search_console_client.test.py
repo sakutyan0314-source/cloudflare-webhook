@@ -60,6 +60,9 @@ class SearchConsoleClientTest(unittest.TestCase):
         self.sites.list.assert_called_once_with()
         self.sites_request.execute.assert_called_once_with()
 
+    def test_property_url_exposes_only_the_configured_url_prefix(self):
+        self.assertEqual("https://example.com/", self.client.property_url)
+
     def test_property_permission_uses_the_official_permission_level_field(self):
         self.sites_request.execute.return_value = {
             "siteEntry": [{

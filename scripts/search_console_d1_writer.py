@@ -190,6 +190,14 @@ class SearchConsoleD1Writer:
             return SaveResult(record.sync_run_id, record.status, 0, skipped=True)
         if record.status != "running" or not record.inserted:
             raise D1WriterSafetyError("sync run is not eligible for automatic reuse")
+        return self.save_acquired_metrics(record, metrics, completed_at)
+
+    def save_acquired_metrics(
+        self, record: SyncRunRecord, metrics: Sequence[MetricRow], completed_at: str | None = None
+    ) -> SaveResult:
+        """Save after a newly inserted running record; no reacquisition or retry."""
+        if record.status != "running" or not record.inserted:
+            raise D1WriterSafetyError("sync run must be newly acquired before saving metrics")
         completed = completed_at or utc_now()
         success_batch = [build_metric_upsert(record.sync_run_id, metric) for metric in metrics]
         success_batch.append(SqlStatement(
