@@ -82,6 +82,10 @@ Sitemap: ${siteUrl}/sitemap.xml
     if (url.pathname === "/robots.txt") {
   return handleRobots(env);
 }
+    const affiliateMatch = url.pathname.match(/^\/go\/amazon\/(\d+)\/?$/);
+    if (affiliateMatch) {
+      return handleAffiliateRedirect(request, env, affiliateMatch[1], url.searchParams);
+    }
     const categoryMatch = url.pathname.match(/^\/category\/([a-z-]+)\/?$/);
     if (categoryMatch) {
       return handleCategoryPage(env, categoryMatch[1]);
@@ -267,6 +271,8 @@ const SEO_CATEGORIES = new Set([
   "uncategorized"
 ]);
 const SEO_STATUSES = new Set(["legacy", "ready", "needs_review"]);
+const AFFILIATE_PLACEMENTS = new Set(["article", "discord"]);
+const AFFILIATE_LINK_TYPE = "amazon_search";
 const MIN_SEO_ARTICLE_BODY_LENGTH = 240;
 const RECENT_ARTICLE_SIMILARITY_THRESHOLD = 0.8;
 
@@ -629,11 +635,8 @@ async function handleArticlePage(env, articleId) {
     const description = article.description;
     const dateStr = new Date(article.updatedAt).toLocaleString("ja-JP");
 
-    const affiliateTag = env.AMAZON_TAG || "default-22";
     const keyword = determineAffiliateKeyword(content);
-
-    const affiliateUrl =
-      `https://www.amazon.co.jp/s?k=${encodeURIComponent(keyword)}&tag=${encodeURIComponent(affiliateTag)}`;
+    const affiliateUrl = affiliateRedirectUrl(siteUrl, id, "article");
 const canonicalUrl = `${siteUrl}/article/${id}`;
     const breadcrumbs = articleBreadcrumb(siteUrl, article);
     let related = [];
@@ -757,7 +760,7 @@ ${jsonLd(breadcrumbJsonLd(siteUrl, breadcrumbs))}
         <a
           href="${escapeHtml(affiliateUrl)}"
           target="_blank"
-          rel="nofollow"
+          rel="nofollow sponsored noopener"
         >Amazonで最新商品をチェックする</a>
       </div>
       ${renderRelatedArticles(related)}
@@ -780,6 +783,58 @@ ${jsonLd(breadcrumbJsonLd(siteUrl, breadcrumbs))}
         headers: TEXT_HEADERS
       }
     );
+  }
+}
+
+function affiliateRedirectUrl(siteUrl, articleId, placement) {
+  return `${siteUrl}/go/amazon/${encodeURIComponent(String(articleId))}?placement=${encodeURIComponent(placement)}`;
+}
+
+function buildAmazonSearchUrl(content, amazonTag) {
+  const keyword = determineAffiliateKeyword(content);
+  const affiliateTag = amazonTag || "default-22";
+  return `https://www.amazon.co.jp/s?k=${encodeURIComponent(keyword)}&tag=${encodeURIComponent(affiliateTag)}`;
+}
+
+async function handleAffiliateRedirect(request, env, articleId, searchParams) {
+  if (request.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405, headers: { ...TEXT_HEADERS, "Allow": "GET" } });
+  }
+  const id = Number.parseInt(articleId, 10);
+  const placement = searchParams.get("placement");
+  if (
+    !Number.isInteger(id) || id < 1 ||
+    searchParams.size !== 1 || searchParams.getAll("placement").length !== 1 ||
+    !AFFILIATE_PLACEMENTS.has(placement)
+  ) {
+    return new Response("Invalid affiliate link", { status: 400, headers: TEXT_HEADERS });
+  }
+
+  try {
+    const row = await env.DB.prepare("SELECT * FROM curation_logs WHERE id = ? LIMIT 1").bind(id).first();
+    if (!row || readSeoArticle(row).seoStatus === "needs_review") return nonPublicArticleResponse();
+    const article = readSeoArticle(row);
+    const clickedAt = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO affiliate_click_events
+        (event_id, article_id, link_type, placement, category, clicked_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(crypto.randomUUID(), id, AFFILIATE_LINK_TYPE, placement, article.category, clickedAt).run();
+    return new Response(null, {
+      status: 302,
+      headers: {
+        "Location": buildAmazonSearchUrl(article.bodyMarkdown, env.AMAZON_TAG),
+        "Cache-Control": "no-store",
+        "X-Robots-Tag": "noindex",
+        "Referrer-Policy": "strict-origin-when-cross-origin"
+      }
+    });
+  } catch (error) {
+    logOperationFailure(error, "affiliate_redirect", "d1");
+    return new Response("Affiliate link unavailable", {
+      status: 503,
+      headers: { ...TEXT_HEADERS, "Cache-Control": "no-store", "X-Robots-Tag": "noindex" }
+    });
   }
 }
 async function handleTestMultiLlm(request, env, runtime = {}) {
@@ -1035,7 +1090,9 @@ async function handleTestDiscord(env) {
       );
     }
     const latestLog = results[0];
-    const message = buildDiscordMessage(latestLog.content, latestLog.created_at, env.AMAZON_TAG);
+    const message = buildDiscordMessage(
+      latestLog.content, latestLog.created_at, env.AMAZON_TAG, getSiteUrl(env), latestLog.id
+    );
     const discordRes = await sendToDiscord(env.DISCORD_WEBHOOK_URL, message);
     return new Response(
       JSON.stringify({ status: "discord_sent_success", discordResponse: discordRes }, null, 2),
@@ -1398,6 +1455,8 @@ async function sendSavedArticleNotification(env, run, article, specification, ru
     article.content,
     article.created_at,
     env.AMAZON_TAG,
+    optionalSiteUrl(env),
+    article.id,
     specification.discordHeader || undefined
   );
   try {
@@ -1513,11 +1572,12 @@ async function runProConsensusPipeline(env, runtime = {}) {
   return callOpenAI(env.OPENAI_API_KEY, reviewed, runtime);
 }
 
-function buildDiscordMessage(content, createdAt, amazonTag, header = "📢 **【テクノロジー＆ビジネストレンド速報】**") {
-  const affiliateTag = amazonTag || "default-22";
+function buildDiscordMessage(content, createdAt, amazonTag, siteUrl, articleId, header = "📢 **【テクノロジー＆ビジネストレンド速報】**") {
   const keyword = determineAffiliateKeyword(content);
-  const encodedKeyword = encodeURIComponent(keyword);
-  const affiliateLink = `\n\n🛒 **おすすめアイテム（${keyword}）:** https://www.amazon.co.jp/s?k=${encodedKeyword}&tag=${affiliateTag}`;
+  const destination = typeof siteUrl === "string" && siteUrl !== "" && Number.isInteger(articleId) && articleId > 0
+    ? affiliateRedirectUrl(siteUrl, articleId, "discord")
+    : buildAmazonSearchUrl(content, amazonTag);
+  const affiliateLink = `\n\n🛒 **おすすめアイテム（${keyword}）:** ${destination}`;
   return `${header}\n- **日時:** ${createdAt}\n\n${content}${affiliateLink}`;
 }
 
@@ -1749,6 +1809,10 @@ function getSiteUrl(env) {
   }
 
   return parsedUrl.origin;
+}
+
+function optionalSiteUrl(env) {
+  return typeof env?.SITE_URL === "string" && env.SITE_URL.trim() !== "" ? getSiteUrl(env) : null;
 }
 
 function isRetryableHttpStatus(status) {
