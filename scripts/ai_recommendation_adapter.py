@@ -23,10 +23,12 @@ class AiRecommendationAdapter:
         if min(max_input_tokens, max_output_tokens, timeout_seconds) < 1:
             raise ValueError("AI limits must be positive")
         self._transport = transport
+        self.last_rejection_code: str | None = None
         self.limits = {"max_input_tokens": max_input_tokens, "max_output_tokens": max_output_tokens, "timeout_seconds": timeout_seconds,
                        "automatic_retry": False, "max_recommendations_per_article": 1}
 
     def recommend(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.last_rejection_code = None
         if not payload["rule_assessment"]["ai_eligible"]:
             raise AiRecommendationError("AI is not eligible for this observation")
         try:
@@ -36,4 +38,17 @@ class AiRecommendationAdapter:
         # collapsed to the same safe outcome.  No response body is retained and
         # no retry is attempted here.
         except Exception as error:
+            message = str(error).lower()
+            if isinstance(error, TimeoutError):
+                self.last_rejection_code = "timeout"
+            elif "evidence" in message:
+                self.last_rejection_code = "evidence_mismatch"
+            elif "prohibited" in message:
+                self.last_rejection_code = "prohibited_expression_or_secret"
+            elif "recommendation type" in message:
+                self.last_rejection_code = "outside_candidate"
+            elif "enum" in message:
+                self.last_rejection_code = "enum_invalid"
+            else:
+                self.last_rejection_code = "schema_or_provider_failure"
             raise AiRecommendationError("AI recommendation was rejected") from error

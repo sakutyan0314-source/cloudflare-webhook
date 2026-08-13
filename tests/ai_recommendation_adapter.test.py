@@ -17,6 +17,9 @@ class AdapterTest(unittest.TestCase):
     def test_rejects_hallucinated_evidence_cvr_purchase_secret_and_bad_schema(self):
         for bad in [response(evidence=[{'field':'observation.impressions','value':999}]), response(reasons='CVRと購入率を改善する。'), response(expected_effect='売上を増やす。'), response(suggested_action='Authorization: Bearer x')]:
             with self.assertRaises(adapter_mod.AiRecommendationError): adapter_mod.AiRecommendationAdapter(Transport(bad)).recommend(payload())
+        subject = adapter_mod.AiRecommendationAdapter(Transport(response(reasons='CVRと購入率を改善する。')))
+        with self.assertRaises(adapter_mod.AiRecommendationError): subject.recommend(payload())
+        self.assertEqual('prohibited_expression_or_secret', subject.last_rejection_code)
     def test_timeout_and_ai_ineligible_stop_without_retry(self):
         class Timeout:
             def propose(self,*args,**kwargs): raise TimeoutError()
