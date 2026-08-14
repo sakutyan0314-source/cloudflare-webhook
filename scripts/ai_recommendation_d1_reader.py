@@ -40,6 +40,7 @@ def build_recommendation_source_selects(
                       clicks, impressions, ctr, position, observed_at
                  FROM search_console_page_daily_metrics
                  WHERE property_uri=? AND search_type=? AND metric_date BETWEEN ? AND ?
+                   AND url_kind='article' AND article_id IS NOT NULL
                  ORDER BY metric_date ASC, page_url ASC""",
             (property_uri, search_type, previous_start.isoformat(), current_end.isoformat()),
         ),
