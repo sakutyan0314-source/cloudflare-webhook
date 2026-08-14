@@ -1,0 +1,15 @@
+{
+  "article_snapshot": {
+    "article_id": 25,
+    "title": "検証済み記事タイトル",
+    "description": "十分な長さを持つ検証済み記事の説明文です。検索利用者に記事の価値を伝えるための安全なfixture専用テキストです。",
+    "category": "saas-cloud",
+    "content_sha256": "48d638f19f22889720ff6bc9301e48f764e41f2ced88e6eabd62824a979b4e94",
+    "body_markdown_sha256": "48d638f19f22889720ff6bc9301e48f764e41f2ced88e6eabd62824a979b4e94",
+    "published_at": "2026-08-08T23:02:08.448Z",
+    "updated_at": "2026-08-14T19:07:44.000Z",
+    "seo_status": "ready"
+  },
+  "proposed_changes": {"title": "検索意図を明確にした検証済み記事タイトルの改善案"},
+  "evidence_references": ["observation.impressions"]
+}
