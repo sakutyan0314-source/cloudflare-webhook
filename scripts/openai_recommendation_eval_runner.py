@@ -27,7 +27,14 @@ class SafeEvalExecutor:
         self._ledger = ledger
         self._transport_factory = transport_factory
 
-    def execute_one(self, request: Mapping[str, str], payload: Mapping[str, Any], *, generated_at: str) -> dict[str, Any]:
+    def execute_one(
+        self,
+        request: Mapping[str, str],
+        payload: Mapping[str, Any],
+        *,
+        generated_at: str,
+        result_transform: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         model_id = request.get("model_id")
         client_request_id = request.get("client_request_id")
         if not isinstance(model_id, str) or not isinstance(client_request_id, str):
@@ -77,11 +84,27 @@ class SafeEvalExecutor:
         except RecommendationValidationError:
             classification = "schema_invalid"
         else:
+            # Eval callers receive only aggregate-safe values.  The production
+            # path may supply a local transform that creates the explicitly
+            # approved human-review envelope from this already validated,
+            # server-reconstructed recommendation.  Neither path persists the
+            # model response or creates a database record.
+            if result_transform is not None:
+                try:
+                    transformed = result_transform(result)
+                except Exception:
+                    self._ledger.finalize(client_request_id, "result_known", http_status=200, classification="review_transform_invalid",
+                                          input_tokens=input_tokens, output_tokens=output_tokens, server_request_id=server_request_id)
+                    raise EvalExecutionError("review transform is invalid") from None
+                if not isinstance(transformed, Mapping):
+                    self._ledger.finalize(client_request_id, "result_known", http_status=200, classification="review_transform_invalid",
+                                          input_tokens=input_tokens, output_tokens=output_tokens, server_request_id=server_request_id)
+                    raise EvalExecutionError("review transform is invalid")
+                self._ledger.finalize(client_request_id, "result_known", http_status=200, classification="recommendation_generated",
+                                      input_tokens=input_tokens, output_tokens=output_tokens, server_request_id=server_request_id)
+                return dict(transformed)
             self._ledger.finalize(client_request_id, "result_known", http_status=200, classification="recommendation_generated",
                                   input_tokens=input_tokens, output_tokens=output_tokens, server_request_id=server_request_id)
-            # Return only server-validated enum values for in-memory aggregate
-            # reporting.  Never return model prose, article content, evidence,
-            # credentials, or transport headers to the caller.
             return {"state": "result_known", "classification": "recommendation_generated", "recommendation_generated": True,
                     "recommendation_type": result["recommendation_type"], "priority": result["priority"],
                     "confidence": result["confidence"], "requires_human_review": result["requires_human_review"]}
