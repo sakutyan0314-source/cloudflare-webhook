@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "purpose": "v1.9.1 approved dry-run manifest for legacy SEO backfill of article ID 25 only",
+  "target_ids": [25],
+  "effective_at": "2026-08-14T19:07:44.000Z",
+  "articles": [
+    {
+      "id": 25,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "48d638f19f22889720ff6bc9301e48f764e41f2ced88e6eabd62824a979b4e94"
+      },
+      "target": {
+        "title": "【2026年最新】「エージェント・メッシュ」の衝撃とビジネスの未来",
+        "description": "エージェント・メッシュが企業のDX、業務自動化、組織設計に与える影響を整理し、導入判断に必要な実務上の論点を解説します。",
+        "body_markdown_sha256": "48d638f19f22889720ff6bc9301e48f764e41f2ced88e6eabd62824a979b4e94",
+        "category": "saas-cloud",
+        "published_at": "2026-08-08T23:02:08.448Z",
+        "updated_at": "2026-08-14T19:07:44.000Z",
+        "seo_status": "ready"
+      }
+    }
+  ]
+}
