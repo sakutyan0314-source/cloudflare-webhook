@@ -1,0 +1,20 @@
+{
+  "schema_version": "v2.0-a-review-envelope-v1",
+  "review_status": "pending",
+  "article_id": 25,
+  "category": "saas-cloud",
+  "title": "検証済み記事タイトル",
+  "current_state": {"impressions": 24, "search_clicks": 2, "ctr": 0.083333, "position": 7.5},
+  "recommendation_id": "rec_v2a_fixture_25",
+  "recommendation_type": "improve_title",
+  "priority": "medium",
+  "confidence": "high",
+  "risk_level": "low",
+  "evidence": [{"field": "observation.impressions", "value": 24}],
+  "reasons": "検証済みの観測値に基づく改善仮説。",
+  "suggested_action": "タイトル候補を比較する変更計画を作成する。",
+  "expected_effect": "検索結果上の訴求改善を評価できる。",
+  "requires_human_review": true,
+  "data_sufficiency": "sufficient",
+  "generated_at": "2026-08-15T00:00:00Z"
+}
