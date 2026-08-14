@@ -29,4 +29,40 @@ class AdapterTest(unittest.TestCase):
         with self.assertRaises(adapter_mod.AiRecommendationError): adapter_mod.AiRecommendationAdapter(ServerError()).recommend(payload())
         denied=payload(); denied['rule_assessment']['ai_eligible']=False
         with self.assertRaises(adapter_mod.AiRecommendationError): adapter_mod.AiRecommendationAdapter(Transport(response())).recommend(denied)
+    def test_evidence_diagnostics_are_value_free_and_numeric_safe(self):
+        valid = schema.diagnose_evidence([{'field':'observation.search_clicks','value':1.0}], payload())
+        self.assertIsNone(valid['code']); self.assertEqual('number', valid['items'][0]['expected_type']); self.assertTrue(valid['items'][0]['matches'])
+        unknown = schema.diagnose_evidence([{'field':'observation.not_real','value':1}], payload())
+        self.assertEqual('unknown_field', unknown['code']); self.assertFalse(unknown['items'][0]['field_exists'])
+        null_payload = payload(); null_payload['observation']['position'] = None
+        null = schema.diagnose_evidence([{'field':'observation.position','value':'null'}], null_payload)
+        self.assertEqual('null_mismatch', null['code']); self.assertEqual('null', null['items'][0]['expected_type']); self.assertEqual('string', null['items'][0]['actual_type'])
+        threshold = schema.diagnose_evidence([{'field':'observation.impressions','operator':'>=','value':10}], payload())
+        self.assertEqual('operator_invalid', threshold['code'])
+    def test_complete_article_and_observation_paths_are_required(self):
+        self.assertIsNone(schema.diagnose_evidence([{'field':'article.article_id','value':17}, {'field':'observation.impressions','value':100}], payload())['code'])
+        for invalid in ('article_id', 'impressions', 'observation.data_row_counts.page_daily'):
+            self.assertEqual('unknown_field', schema.diagnose_evidence([{'field':invalid,'value':1}], payload())['code'])
+    def test_unsafe_text_diagnostics_are_value_free_and_fail_closed(self):
+        cases = [
+            ('affiliate clickを購入率として扱う。', 'prohibited_affiliate_conversion_term'),
+            ('purchase behaviorを増やす。', 'prohibited_purchase_term'),
+            ('sales growthを増やす。', 'prohibited_sales_term'),
+            ('revenue growthを増やす。', 'prohibited_revenue_term'),
+            ('CVRを改善する。', 'prohibited_cvr_term'),
+            ('api_key: hidden', 'suspected_api_key'),
+            ('Authorization: hidden', 'suspected_authorization_header'),
+            ('token: hidden', 'suspected_token'),
+            ('private_key: hidden', 'suspected_secret'),
+        ]
+        for text, expected in cases:
+            diagnostic = schema.diagnose_unsafe_ai_text({'reasons': text})
+            self.assertTrue(diagnostic['blocked']); self.assertIn(expected, diagnostic['codes'])
+            self.assertEqual(['reasons'], diagnostic['fields']); self.assertNotIn(text, str(diagnostic))
+        normal = schema.diagnose_unsafe_ai_text({'reasons': '入力値だけを根拠に人間レビューする。'})
+        self.assertFalse(normal['blocked']); self.assertEqual([], normal['codes'])
+        both = schema.diagnose_unsafe_ai_text({'reasons': 'CVRと売上を扱う。', 'suggested_action': 'token: hidden'})
+        self.assertEqual({'prohibited_expression', 'secret'}, set(both['categories']))
+        with self.assertRaises(schema.UnsafeAiResponseError):
+            schema.validate_ai_response(response(reasons='CVRを改善する。'), payload())
 if __name__ == '__main__': unittest.main()

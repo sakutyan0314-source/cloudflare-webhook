@@ -26,19 +26,82 @@ PRIORITIES = frozenset({"critical", "high", "medium", "low", "observe"})
 CONFIDENCES = frozenset({"high", "medium", "low"})
 DATA_SUFFICIENCY = frozenset({"sufficient", "insufficient_data"})
 RISK_LEVELS = frozenset({"low", "medium", "high"})
+EVIDENCE_FIELD_PATHS = (
+    "article.article_id", "article.category", "article.title", "article.description",
+    "observation.observation_days", "observation.impressions", "observation.search_clicks",
+    "observation.ctr", "observation.position", "observation.affiliate_click_count",
+    "observation.affiliate_click_rate", "observation.search_affiliate_classification",
+    "observation.trend",
+)
 
 # This is deliberately broad: neither direct claims nor common Japanese
 # equivalents of conversion / purchase / revenue language are acceptable.
+# These patterns preserve the original rejection surface.  They only split its
+# safe audit classification; no match has been removed or made optional.
 FORBIDDEN_AI_TERMS = re.compile(
     r"\b(cvr|conversion rate|conversion|purchase|order|revenue|sales|commission|earnings)\b|"
     r"購入|注文|売上|成果報酬|成約率|購入率|コンバージョン|CVR",
     re.IGNORECASE,
 )
 SECRET_MARKERS = re.compile(r"(?:api[_ -]?key|authorization|bearer\s+|private[_ -]?key|token)\s*[:=]", re.IGNORECASE)
+UNSAFE_AI_TEXT_PATTERNS = (
+    ("prohibited_cvr_term", re.compile(r"\b(?:cvr|conversion rate)\b|CVR", re.IGNORECASE), "prohibited_expression"),
+    ("prohibited_affiliate_conversion_term", re.compile(r"\bconversion\b|コンバージョン|成約率|購入率", re.IGNORECASE), "prohibited_expression"),
+    ("prohibited_purchase_term", re.compile(r"\b(?:purchase|order)\b|購入|注文", re.IGNORECASE), "prohibited_expression"),
+    ("prohibited_sales_term", re.compile(r"\bsales\b|売上", re.IGNORECASE), "prohibited_expression"),
+    ("prohibited_revenue_term", re.compile(r"\b(?:revenue|commission|earnings)\b|成果報酬", re.IGNORECASE), "prohibited_expression"),
+    ("suspected_api_key", re.compile(r"api[_ -]?key\s*[:=]", re.IGNORECASE), "secret"),
+    ("suspected_authorization_header", re.compile(r"(?:authorization|bearer\s+)\s*[:=]", re.IGNORECASE), "secret"),
+    ("suspected_secret", re.compile(r"private[_ -]?key\s*[:=]", re.IGNORECASE), "secret"),
+    ("suspected_token", re.compile(r"token\s*[:=]", re.IGNORECASE), "secret"),
+)
 
 
 class RecommendationValidationError(ValueError):
     """Raised when an input or AI response cannot safely become a proposal."""
+
+
+class EvidenceValidationError(RecommendationValidationError):
+    """Safe, value-free evidence diagnostics for an otherwise rejected response."""
+
+    def __init__(self, code: str, diagnostic: Mapping[str, Any]):
+        super().__init__("AI evidence does not match input")
+        self.code = code
+        self.diagnostic = dict(diagnostic)
+
+
+class UnsafeAiResponseError(RecommendationValidationError):
+    """Fail-closed unsafe text with value-free diagnostic metadata only."""
+
+    def __init__(self, diagnostic: Mapping[str, Any]):
+        super().__init__("AI response contains prohibited or secret-like text")
+        self.diagnostic = dict(diagnostic)
+
+
+def diagnose_unsafe_ai_text(fields: Mapping[str, object]) -> dict[str, Any]:
+    """Classify blocked text without returning the text or matched fragment."""
+    matches = []
+    for field_name, value in fields.items():
+        if not isinstance(field_name, str) or not isinstance(value, str):
+            continue
+        for code, pattern, category in UNSAFE_AI_TEXT_PATTERNS:
+            count = len(pattern.findall(value))
+            if count:
+                matches.append({"code": code, "category": category, "field": field_name, "count": count})
+    # Preserve the broad legacy patterns as a final defensive check.  These
+    # fallback codes cannot make an allowed response become accepted.
+    combined = "\n".join(value for value in fields.values() if isinstance(value, str))
+    if FORBIDDEN_AI_TERMS.search(combined) and not any(item["category"] == "prohibited_expression" for item in matches):
+        matches.append({"code": "other_prohibited_expression", "category": "prohibited_expression", "field": "unknown", "count": 1})
+    if SECRET_MARKERS.search(combined) and not any(item["category"] == "secret" for item in matches):
+        matches.append({"code": "suspected_secret", "category": "secret", "field": "unknown", "count": 1})
+    codes = []
+    for item in matches:
+        if item["code"] not in codes:
+            codes.append(item["code"])
+    return {"blocked": bool(matches), "categories": sorted({item["category"] for item in matches}),
+            "codes": codes, "detection_count": sum(item["count"] for item in matches),
+            "fields": sorted({item["field"] for item in matches})}
 
 
 def utc_now() -> str:
@@ -131,16 +194,19 @@ def validate_ai_response(response: Mapping[str, Any], input_payload: Mapping[str
         raise RecommendationValidationError("AI enum is invalid")
     if not isinstance(response["evidence"], list) or not response["evidence"]:
         raise RecommendationValidationError("AI evidence is invalid")
-    allowed_values = _evidence_values(input_payload)
-    for item in response["evidence"]:
-        if not isinstance(item, Mapping) or item.get("field") not in allowed_values or item.get("value") != allowed_values[item["field"]]:
-            raise RecommendationValidationError("AI evidence does not match input")
+    evidence_diagnostic = diagnose_evidence(response["evidence"], input_payload)
+    if evidence_diagnostic["code"] is not None:
+        raise EvidenceValidationError(evidence_diagnostic["code"], evidence_diagnostic)
     free_values = [response["reasons"], response["suggested_action"], response["expected_effect"]]
     if not all(isinstance(value, str) and value.strip() for value in free_values):
         raise RecommendationValidationError("AI free text is invalid")
-    combined = "\n".join(free_values)
-    if FORBIDDEN_AI_TERMS.search(combined) or SECRET_MARKERS.search(combined):
-        raise RecommendationValidationError("AI response contains prohibited language")
+    unsafe_diagnostic = diagnose_unsafe_ai_text({
+        "reasons": response["reasons"],
+        "suggested_action": response["suggested_action"],
+        "expected_effect": response["expected_effect"],
+    })
+    if unsafe_diagnostic["blocked"]:
+        raise UnsafeAiResponseError(unsafe_diagnostic)
     return {"recommendation_type": recommendation_type, "priority": response["priority"], "confidence": response["confidence"],
             "evidence": [{"field": item["field"], "value": item["value"]} for item in response["evidence"]],
             "reasons": response["reasons"].strip(), "suggested_action": response["suggested_action"].strip(),
@@ -148,10 +214,72 @@ def validate_ai_response(response: Mapping[str, Any], input_payload: Mapping[str
 
 
 def _evidence_values(payload: Mapping[str, Any]) -> dict[str, Any]:
+    article = payload["article"]
     obs = payload["observation"]
-    return {f"observation.{key}": obs[key] for key in (
+    values = {f"article.{key}": article[key] for key in ("article_id", "category", "title", "description")}
+    values.update({f"observation.{key}": obs[key] for key in (
         "impressions", "search_clicks", "ctr", "position", "affiliate_click_count", "affiliate_click_rate", "search_affiliate_classification", "trend", "observation_days"
-    )}
+    )})
+    return values
+
+
+def _evidence_type(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return type(value).__name__
+
+
+def diagnose_evidence(evidence: object, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify evidence safety without retaining or exposing any evidence values."""
+    if not isinstance(evidence, list) or not evidence:
+        return {"code": "evidence_empty", "evidence_count": 0, "items": []}
+    allowed = _evidence_values(payload)
+    rows, seen, overall_code = [], set(), None
+    for item in evidence:
+        if not isinstance(item, Mapping):
+            rows.append({"field": None, "field_exists": False, "expected_type": None, "actual_type": None,
+                         "matches": False, "code": "missing_field"})
+            overall_code = overall_code or "missing_field"
+            continue
+        field = item.get("field")
+        field_name = field if isinstance(field, str) else None
+        if "operator" in item:
+            code, expected = "operator_invalid", None
+        elif field_name is None:
+            code, expected = "missing_field", None
+        elif field_name not in allowed:
+            code, expected = "unknown_field", None
+        elif field_name in seen:
+            code, expected = "duplicate_evidence", allowed[field_name]
+        elif "value" not in item:
+            code, expected = "missing_field", allowed[field_name]
+        else:
+            expected, actual = allowed[field_name], item["value"]
+            if expected is None or actual is None:
+                code = None if expected is actual else "null_mismatch"
+            elif isinstance(expected, (int, float)) and not isinstance(expected, bool) and isinstance(actual, (int, float)) and not isinstance(actual, bool):
+                code = None if expected == actual else "value_mismatch"
+            elif _evidence_type(expected) != _evidence_type(actual):
+                code = "type_mismatch"
+            elif expected != actual:
+                code = "value_mismatch"
+            else:
+                code = None
+        if field_name is not None:
+            seen.add(field_name)
+        actual = item.get("value")
+        field_exists = field_name in allowed if field_name is not None else False
+        rows.append({"field": field_name, "field_exists": field_exists,
+                     "expected_type": _evidence_type(expected) if field_exists else None,
+                     "actual_type": _evidence_type(actual) if "value" in item else None, "matches": code is None, "code": code})
+        overall_code = overall_code or code
+    return {"code": overall_code, "evidence_count": len(evidence), "items": rows}
 
 
 def build_recommendation(input_payload: Mapping[str, Any], ai: Mapping[str, Any] | None, generated_at: str | None = None) -> dict[str, Any]:
