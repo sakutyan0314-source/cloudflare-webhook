@@ -701,6 +701,20 @@ AIまたは自動化システムは変更案、根拠、影響、代替案を提
 
 ## 18. 変更履歴
 
+### v2.0-A — 2026-08-15（本番canary待機）
+
+- 本番D1のread-only観測値を用いる初回canaryの対象として記事 ID 25 を確認した。固定SELECT、`changed_db=false`、`rows_written=0` の条件は満たしたが、観測は1日、impressions 1、search clicks 0、affiliate click 0、前期間データなしであった
+- v2.0-Aのルール層は `insufficient_data` / `observation_below_fixed_minimum` と判定し、`ai_eligible=false` とした。これは正常な安全停止である
+- 本番canaryの固定最低条件は観測7日以上かつimpressions 10以上とし、条件を満たすまでTerra/OpenAIを呼び出さない。この安全基準を緩和しない
+- recommendationのD1保存、記事変更、自動公開、Amazon導線変更、およびWorker、Cron、pipeline、Discordの変更は実施していない
+
+### v1.9.1-B — 2026-08-14（ID 25 SEO保守backfill）
+
+- v1.9.1の保守工程として記事 ID 25のみを承認済みmanifestに基づき `legacy` から `ready` へ移行した。categoryは `saas-cloud` とし、title、description、body_markdown、published_at、updated_at、seo_statusを承認済み値へ正規化した
+- ID、既存`content`、pipeline、reconciliation、通知状態、Worker、Cron、Discord、Amazon導線、migrationは変更していない。`content` SHA-256は不変であり、`body_markdown` SHA-256との一致を確認した
+- 条件付きUPDATEの正式監査基準を、`changed_db=true`、`changes=1`、`UPDATE ... RETURNING id`が対象IDを1件返すこと、直後のread-only事後検証に固定した。`rows_written`はINDEX更新を含む参考監査値であり、1行更新判定には使用しない
+- 事後検証で、ID 25の承認済みSEO値、content不変、body_markdown/content SHA一致、`PRAGMA foreign_key_check=0`、既存pipeline、Search Console、affiliate状態の不変を確認した
+
 ### v1.9.2-A — 2026-08-11
 
 - SEO内部構造強化を本番反映。Worker Version ID `7174dc3e-7851-4352-8d58-2f6079a48e4b` をTraffic 100%で稼働した
