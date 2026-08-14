@@ -51,6 +51,13 @@ class D1ReadOnlySessionTest(unittest.TestCase):
         sets = module.validate_read_only_result_sets(parsed.payload, 1)
         self.assertEqual(200, parsed.status); self.assertEqual("application/json", parsed.content_type); self.assertEqual(1, len(sets)); self.assertTrue(response.closed)
 
+    def test_bookmark_is_the_only_additional_read_only_route(self):
+        response = Response(body=b'{"success":true,"result":{"bookmark":"safe-bookmark"}}')
+        transport = module.D1ReadOnlyRestTransport("account", "database", "cfat_dummy", opener=lambda *_args, **_kwargs: response)
+        bookmark = transport.current_bookmark()
+        self.assertEqual(200, bookmark.status)
+        self.assertEqual("safe-bookmark", bookmark.payload["result"]["bookmark"])
+
     def test_http_failure_and_parse_cases_fail_closed_without_body(self):
         cases = [
             Response(401, body=b'{"success":false,"errors":[{"message":"secret-like body"}]}'),

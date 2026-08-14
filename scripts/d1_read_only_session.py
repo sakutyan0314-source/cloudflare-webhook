@@ -123,7 +123,7 @@ class D1ReadOnlyRestTransport:
         self._opener = opener
 
     def _request(self, method: str, path: str, payload: object | None = None) -> D1JsonResponse:
-        if method not in {"GET", "POST"} or path not in {"", "/query"}:
+        if (method, path) not in {("GET", ""), ("GET", "/time_travel/bookmark"), ("POST", "/query")}:
             raise D1ReadSafetyError("D1 Read transport rejects this request route")
         body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
         try:
@@ -166,6 +166,10 @@ class D1ReadOnlyRestTransport:
 
     def identity(self) -> D1JsonResponse:
         return self._request("GET", "")
+
+    def current_bookmark(self) -> D1JsonResponse:
+        """Retrieve the current Time Travel bookmark without changing D1."""
+        return self._request("GET", "/time_travel/bookmark")
 
     def fixed_select_batch(self, statements: Sequence[Mapping[str, object]]) -> D1JsonResponse:
         if not statements or any(not isinstance(item.get("sql"), str) or not item["sql"].lstrip().upper().startswith("SELECT ") or ";" in item["sql"].rstrip(";") for item in statements):
