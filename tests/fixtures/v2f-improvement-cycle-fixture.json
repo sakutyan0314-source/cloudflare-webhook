@@ -1,0 +1,26 @@
+{
+  "measurement": {
+    "measurement_schema_version": "v2.0-e-measurement-v1",
+    "measurement_id": "measurement_25_v1",
+    "execution_id": "execution_25_v1",
+    "article_id": 25,
+    "plan_id": "plan_25_v1",
+    "recommendation_id": "recommendation_25_v1",
+    "measurement_classification": "neutral",
+    "confidence": "medium",
+    "threshold_status": "approved",
+    "threshold_config_version": "threshold-v1",
+    "contamination_status": "clean",
+    "requires_human_review": true,
+    "execution_authorized": false
+  },
+  "review": {"measurement_id": "measurement_25_v1", "decision": "accept_result", "reviewer_id": "operator_primary", "execution_authorized": false},
+  "now": "2026-09-01T12:00:00Z",
+  "rollback_context": {
+    "execution_result_classification": "result_known_applied",
+    "allowed_fields": ["title"],
+    "before_snapshot_fingerprint": "before_snapshot",
+    "after_snapshot_fingerprint": "after_snapshot",
+    "rollback_diff_deterministic": true
+  }
+}
