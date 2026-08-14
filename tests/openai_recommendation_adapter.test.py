@@ -23,4 +23,8 @@ class OpenAiAdapterTest(unittest.TestCase):
   with self.assertRaises(json.JSONDecodeError):json.loads(adapter._output_text({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'not-json'}]}]}))
  def test_http_diagnostic_redacts_token_like_text(self):
   self.assertEqual('Bearer [REDACTED]',adapter._redact_error_message('Bearer sk-should-not-appear'))
+ def test_transport_diagnostics_are_safe_categories(self):
+  self.assertEqual('connection_reset',adapter._transport_error_code(ConnectionResetError()))
+  self.assertEqual('response_read_failed',adapter._transport_error_code(json.JSONDecodeError('safe','{',0)))
+  self.assertEqual('transport_exception',adapter._transport_error_code(adapter.URLError('safe')))
 if __name__=='__main__':unittest.main()

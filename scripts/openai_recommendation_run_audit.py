@@ -113,6 +113,10 @@ class RunAuditLedger:
             raise AuditError("audit ledger is invalid")
         states = {item["client_request_id"]: "planned" for item in events[0].get("requests", []) if isinstance(item, Mapping)}
         for event in events[1:]:
+            if event.get("event") == "continuation_approved":
+                if event.get("run_id") != self.run_id or event.get("scope") != "remaining_planned_requests":
+                    raise AuditError("audit ledger continuation is invalid")
+                continue
             request_id = event.get("client_request_id")
             if request_id not in states:
                 raise AuditError("audit ledger request is invalid")
@@ -128,10 +132,40 @@ class RunAuditLedger:
                 raise AuditError("audit ledger event is invalid")
         return states
 
+    def _manual_stop_count(self) -> int:
+        """Count unsafe terminal outcomes; bare send_started counts as unknown."""
+        states = self.states()
+        events = [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines()][1:]
+        finals = {item.get("client_request_id"): item for item in events if item.get("event") == "final"}
+        count = 0
+        for request_id, state in states.items():
+            if state == "outcome_unknown":
+                count += 1
+            elif state == "result_known" and finals.get(request_id, {}).get("classification") != "recommendation_generated":
+                count += 1
+        return count
+
+    def _continuation_approval_count(self) -> int:
+        events = [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines()][1:]
+        return sum(item.get("event") == "continuation_approved" for item in events)
+
+    def approve_continuation(self) -> None:
+        """Persist an explicit human gate for exactly one existing stop event."""
+        if not any(state == "planned" for state in self.states().values()):
+            raise AuditError("no planned request can be continued")
+        stops = self._manual_stop_count()
+        approvals = self._continuation_approval_count()
+        if stops <= approvals:
+            raise AuditError("continuation approval is not required")
+        self._append({"event": "continuation_approved", "at": utc_now(), "run_id": self.run_id,
+                      "scope": "remaining_planned_requests", "manual_stop_count": stops})
+
     def begin_request(self, client_request_id: str) -> None:
         states = self.states()
         if states.get(client_request_id) != "planned":
             raise AuditError("request is already sent or its outcome is unknown")
+        if self._manual_stop_count() > self._continuation_approval_count():
+            raise AuditError("explicit continuation approval is required")
         self._append({"event": "send_started", "at": utc_now(), "run_id": self.run_id,
                       "client_request_id": client_request_id})
 

@@ -16,5 +16,9 @@ class RunAuditTest(unittest.TestCase):
   self.ledger.path.unlink()
   with self.assertRaises(audit.AuditError): self.ledger.begin_request(self.plan[0]['client_request_id'])
  def test_known_http_and_timeout_outcomes_are_distinct(self):
-  first,second=(item['client_request_id'] for item in self.plan);self.ledger.begin_request(first);self.ledger.finalize(first,'result_known',http_status=400,classification='http_error');self.ledger.begin_request(second);self.ledger.finalize(second,'outcome_unknown',http_status=None,classification='timeout');self.assertEqual({'result_known','outcome_unknown'},set(self.ledger.states().values()))
+  first,second=(item['client_request_id'] for item in self.plan);self.ledger.begin_request(first);self.ledger.finalize(first,'result_known',http_status=400,classification='http_error');self.ledger.approve_continuation();self.ledger.begin_request(second);self.ledger.finalize(second,'outcome_unknown',http_status=None,classification='timeout');self.assertEqual({'result_known','outcome_unknown'},set(self.ledger.states().values()))
+ def test_unknown_outcome_requires_explicit_human_continuation(self):
+  first,second=self.plan;self.ledger.begin_request(first['client_request_id']);self.ledger.finalize(first['client_request_id'],'outcome_unknown',http_status=None,classification='connection_closed')
+  with self.assertRaises(audit.AuditError):self.ledger.begin_request(second['client_request_id'])
+  self.ledger.approve_continuation();self.ledger.begin_request(second['client_request_id']);self.assertEqual('outcome_unknown',self.ledger.states()[second['client_request_id']])
 if __name__=='__main__':unittest.main()

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from ai_recommendation_schema import EvidenceValidationError, RecommendationValidationError, UnsafeAiResponseError, build_recommendation, diagnose_evidence
-from openai_recommendation_adapter import OpenAiRecommendationHttpError, OpenAiRecommendationResponseError
+from openai_recommendation_adapter import OpenAiRecommendationHttpError, OpenAiRecommendationResponseError, OpenAiRecommendationTransportError
 from openai_recommendation_run_audit import RunAuditLedger
 
 
@@ -47,6 +47,12 @@ class SafeEvalExecutor:
         except TimeoutError:
             self._ledger.finalize(client_request_id, "outcome_unknown", http_status=None, classification="timeout")
             raise EvalExecutionError("OpenAI delivery outcome is unknown") from None
+        except OpenAiRecommendationTransportError as error:
+            self._ledger.finalize(client_request_id, "outcome_unknown", http_status=None, classification=error.code)
+            raise EvalExecutionError("OpenAI delivery outcome is unknown") from None
+        except KeyboardInterrupt:
+            self._ledger.finalize(client_request_id, "outcome_unknown", http_status=None, classification="local_process_interrupted")
+            raise EvalExecutionError("OpenAI delivery outcome is unknown") from None
         except Exception:
             # Do not retry: this covers connection loss after send_started.
             self._ledger.finalize(client_request_id, "outcome_unknown", http_status=None, classification="delivery_unknown")
@@ -73,7 +79,12 @@ class SafeEvalExecutor:
         else:
             self._ledger.finalize(client_request_id, "result_known", http_status=200, classification="recommendation_generated",
                                   input_tokens=input_tokens, output_tokens=output_tokens, server_request_id=server_request_id)
-            return {"state": "result_known", "classification": "recommendation_generated", "recommendation_generated": True}
+            # Return only server-validated enum values for in-memory aggregate
+            # reporting.  Never return model prose, article content, evidence,
+            # credentials, or transport headers to the caller.
+            return {"state": "result_known", "classification": "recommendation_generated", "recommendation_generated": True,
+                    "recommendation_type": result["recommendation_type"], "priority": result["priority"],
+                    "confidence": result["confidence"], "requires_human_review": result["requires_human_review"]}
         self._ledger.finalize(client_request_id, "result_known", http_status=200, classification=classification,
                               input_tokens=input_tokens, output_tokens=output_tokens, server_request_id=server_request_id)
         raise EvalExecutionError("OpenAI response failed safety validation")

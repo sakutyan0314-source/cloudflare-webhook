@@ -16,7 +16,7 @@ class RunnerTest(unittest.TestCase):
  def tearDown(self):self.temp.cleanup()
  def test_success_records_before_and_after_one_send(self):
   calls=[];subject=runner.SafeEvalExecutor(self.ledger,lambda model,request:(calls.append((model,request)) or Transport(response())))
-  result=subject.execute_one(self.plan[0],self.payload,generated_at='2026-08-14T00:00:00Z');self.assertTrue(result['recommendation_generated']);self.assertEqual(1,len(calls));self.assertEqual('result_known',self.ledger.states()[self.plan[0]['client_request_id']])
+  result=subject.execute_one(self.plan[0],self.payload,generated_at='2026-08-14T00:00:00Z');self.assertTrue(result['recommendation_generated']);self.assertEqual('improve_internal_links',result['recommendation_type']);self.assertEqual('medium',result['priority']);self.assertEqual('medium',result['confidence']);self.assertTrue(result['requires_human_review']);self.assertEqual(1,len(calls));self.assertEqual('result_known',self.ledger.states()[self.plan[0]['client_request_id']])
  def test_timeout_is_unknown_and_duplicate_is_not_resent(self):
   calls=[];subject=runner.SafeEvalExecutor(self.ledger,lambda model,request:(calls.append(request) or Transport(error=TimeoutError())))
   with self.assertRaises(runner.EvalExecutionError):subject.execute_one(self.plan[0],self.payload,generated_at='2026-08-14T00:00:00Z')
@@ -33,7 +33,20 @@ class RunnerTest(unittest.TestCase):
   bad_evidence=response();bad_evidence['evidence']=[{'field':'observation.impressions','value':999}]
   forbidden=response();forbidden['reasons']='CVRを改善する。'
   results=iter([Transport(bad_evidence),Transport(forbidden)]);subject=runner.SafeEvalExecutor(self.ledger,lambda model,request:next(results))
-  for item in self.plan:
+  for index,item in enumerate(self.plan):
    with self.assertRaises(runner.EvalExecutionError):subject.execute_one(item,self.payload,generated_at='2026-08-14T00:00:00Z')
+   if index == 0:self.ledger.approve_continuation()
   self.assertEqual({'result_known'},set(self.ledger.states().values()));text=self.ledger.path.read_text();self.assertIn('evidence_invalid',text);self.assertIn('prohibited_cvr_term',text);self.assertNotIn('999',text);self.assertNotIn('CVR',text)
+ def test_transport_categories_stop_without_resend_or_auto_continue(self):
+  for code in ('connection_reset','connection_closed','response_read_failed','transport_exception'):
+   temp=tempfile.TemporaryDirectory();plan=audit.build_request_plan('v2a-eval-r5-luna','gpt-5.6-luna',['high_value','traffic_only']);ledger=audit.RunAuditLedger.create(temp.name,ROOT,'v2a-eval-r5-luna',plan)
+   subject=runner.SafeEvalExecutor(ledger,lambda model,request:Transport(error=provider.OpenAiRecommendationTransportError(code)))
+   with self.assertRaises(runner.EvalExecutionError):subject.execute_one(plan[0],self.payload,generated_at='2026-08-14T00:00:00Z')
+   with self.assertRaises(Exception):subject.execute_one(plan[0],self.payload,generated_at='2026-08-14T00:00:00Z')
+   with self.assertRaises(Exception):subject.execute_one(plan[1],self.payload,generated_at='2026-08-14T00:00:00Z')
+   self.assertEqual('outcome_unknown',ledger.states()[plan[0]['client_request_id']]);ledger.approve_continuation();temp.cleanup()
+ def test_local_interrupt_is_recorded_without_resend(self):
+  subject=runner.SafeEvalExecutor(self.ledger,lambda model,request:Transport(error=KeyboardInterrupt()))
+  with self.assertRaises(runner.EvalExecutionError):subject.execute_one(self.plan[0],self.payload,generated_at='2026-08-14T00:00:00Z')
+  self.assertEqual('outcome_unknown',self.ledger.states()[self.plan[0]['client_request_id']]);self.assertIn('local_process_interrupted',self.ledger.path.read_text())
 if __name__=='__main__':unittest.main()

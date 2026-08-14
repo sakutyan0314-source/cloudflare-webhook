@@ -8,8 +8,10 @@ performs exactly one HTTP attempt per proposal.
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import re
+import socket
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -42,6 +44,29 @@ class OpenAiRecommendationResponseError(OpenAiRecommendationError):
         super().__init__("OpenAI recommendation response was rejected")
         self.code = code
         self.diagnostic = dict(diagnostic)
+
+
+class OpenAiRecommendationTransportError(OpenAiRecommendationError):
+    """Value-free transport classification; delivery is never presumed."""
+
+    def __init__(self, code: str):
+        if code not in {"connection_reset", "connection_closed", "response_read_failed", "transport_exception", "delivery_state_unknown"}:
+            code = "delivery_state_unknown"
+        super().__init__("OpenAI recommendation transport failed")
+        self.code = code
+
+
+def _transport_error_code(error: BaseException) -> str:
+    """Classify known local transport shapes without retaining error detail."""
+    if isinstance(error, ConnectionResetError):
+        return "connection_reset"
+    if isinstance(error, (http.client.RemoteDisconnected, ConnectionAbortedError)):
+        return "connection_closed"
+    if isinstance(error, (UnicodeDecodeError, json.JSONDecodeError)):
+        return "response_read_failed"
+    if isinstance(error, (URLError, OSError, socket.error)):
+        return "transport_exception"
+    return "delivery_state_unknown"
 
 
 def _redact_error_message(value: object) -> str:
@@ -210,8 +235,10 @@ class OpenAiResponsesTransport(AiProposalTransport):
                                               "server_request_id": server_request_id if isinstance(server_request_id, str) else None}
         except HTTPError as error:
             raise _safe_http_error(error) from None
-        except (URLError, TimeoutError, json.JSONDecodeError):
-            raise OpenAiRecommendationError("OpenAI recommendation request failed") from None
+        except TimeoutError:
+            raise
+        except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise OpenAiRecommendationTransportError(_transport_error_code(error)) from None
         try:
             self.last_response_diagnostic = response_structure_diagnostic(parsed)
             return json.loads(_output_text(parsed))
