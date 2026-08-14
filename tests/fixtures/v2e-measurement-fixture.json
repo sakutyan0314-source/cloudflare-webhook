@@ -1,0 +1,22 @@
+{
+  "execution": {"execution_id":"execution_25_v1","article_id":25,"plan_id":"plan_25","recommendation_id":"rec_25","applied_at":"2026-08-01T18:00:00Z","execution_result_classification":"result_known_applied","execution_authorized":false,"applied_fields":["title"]},
+  "latest_final_date":"2026-08-30",
+  "before_rows":[
+    {"metric_date":"2026-07-19","article_id":25,"clicks":1,"impressions":10,"position":4.0},
+    {"metric_date":"2026-07-20","article_id":25,"clicks":2,"impressions":20,"position":6.0},
+    {"metric_date":"2026-07-21","article_id":25,"clicks":1,"impressions":10,"position":5.0},
+    {"metric_date":"2026-07-22","article_id":25,"clicks":1,"impressions":10,"position":5.0},
+    {"metric_date":"2026-07-23","article_id":25,"clicks":1,"impressions":10,"position":5.0},
+    {"metric_date":"2026-07-24","article_id":25,"clicks":1,"impressions":10,"position":5.0},
+    {"metric_date":"2026-07-25","article_id":25,"clicks":1,"impressions":10,"position":5.0}
+  ],
+  "after_rows":[
+    {"metric_date":"2026-08-08","article_id":25,"clicks":2,"impressions":20,"position":4.0},
+    {"metric_date":"2026-08-09","article_id":25,"clicks":2,"impressions":20,"position":4.0},
+    {"metric_date":"2026-08-10","article_id":25,"clicks":2,"impressions":20,"position":4.0},
+    {"metric_date":"2026-08-11","article_id":25,"clicks":2,"impressions":20,"position":4.0},
+    {"metric_date":"2026-08-12","article_id":25,"clicks":2,"impressions":20,"position":4.0},
+    {"metric_date":"2026-08-13","article_id":25,"clicks":2,"impressions":20,"position":4.0},
+    {"metric_date":"2026-08-14","article_id":25,"clicks":2,"impressions":20,"position":4.0}
+  ]
+}
