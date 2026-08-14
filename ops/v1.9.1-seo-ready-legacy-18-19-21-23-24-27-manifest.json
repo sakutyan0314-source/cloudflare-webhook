@@ -1,0 +1,140 @@
+{
+  "schema_version": "v1.9.1-seo-ready-manifest-v1",
+  "purpose": "Human-approved category metadata-only dry-run manifest for legacy articles 18, 19, 21, 23, 24, and 27",
+  "effective_at": "2026-08-14T22:30:34.000Z",
+  "target_ids": [18, 19, 21, 23, 24, 27],
+  "articles": [
+    {
+      "id": 18,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "98ada9b7486fcb5b218a1842ae0db6297450800c441670dfd6082217381ae335"
+      },
+      "target": {
+        "title": "【2026年最新】Agentic Enterpriseの台頭—新たなビジネスプレイブックへ",
+        "description": "この変化の核となるのは、多数の自律型AIエージェントの登場であり、彼らが切り開く新たなビジネスの風景は、まさに異次元のものだ。",
+        "category": "ai-automation",
+        "body_markdown_sha256": "98ada9b7486fcb5b218a1842ae0db6297450800c441670dfd6082217381ae335",
+        "published_at": "2026-08-03T23:01:45.544Z",
+        "updated_at": "2026-08-14T22:30:34.000Z",
+        "seo_status": "ready"
+      }
+    },
+    {
+      "id": 19,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "dafca6e1d92312eb336628de8b4c8993905624a4df63933dbd7fd3e035c800b9"
+      },
+      "target": {
+        "title": "【2026年最新】自律型AIが変えるビジネスの未来──「合成組織」が急速に進化する時代へ",
+        "description": "ビジネスの効率性、透明性、そしてスピードがこれまでにない高水準に達し、もはや人間が日常的に行う業務の多くがAIによって実行されています。",
+        "category": "dx-organization",
+        "body_markdown_sha256": "dafca6e1d92312eb336628de8b4c8993905624a4df63933dbd7fd3e035c800b9",
+        "published_at": "2026-08-04T11:01:04.136Z",
+        "updated_at": "2026-08-14T22:30:34.000Z",
+        "seo_status": "ready"
+      }
+    },
+    {
+      "id": 21,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "0629dab2aaefcf323c8545becfb0a71ac474fc382c5111dcc4caeccb92ff89ba"
+      },
+      "target": {
+        "title": "【2026年最新】SaaSの終焉と自律型エージェント群の台頭が拓く未来",
+        "description": "このトレンドの核となるのは、かつては信じられなかった「自律型エージェント群（Agentic Swarms）」の急速な進展です。",
+        "category": "ai-automation",
+        "body_markdown_sha256": "0629dab2aaefcf323c8545becfb0a71ac474fc382c5111dcc4caeccb92ff89ba",
+        "published_at": "2026-08-05T05:56:05.880Z",
+        "updated_at": "2026-08-14T22:30:34.000Z",
+        "seo_status": "ready"
+      }
+    },
+    {
+      "id": 23,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "0e1543608995592961d9dfd8733748a70507944458aaa7bd1788d105a388bac0"
+      },
+      "target": {
+        "title": "【2026年最新】AIとビジネスの未来：自律型エージェントの時代へ突入",
+        "description": "現在のビジネス環境は、自律型エージェントが多数連携し、判断を下し、商談を行う「Agentic Enterprise」の時代に突入しています。",
+        "category": "ai-automation",
+        "body_markdown_sha256": "0e1543608995592961d9dfd8733748a70507944458aaa7bd1788d105a388bac0",
+        "published_at": "2026-08-06T23:01:09.815Z",
+        "updated_at": "2026-08-14T22:30:34.000Z",
+        "seo_status": "ready"
+      }
+    },
+    {
+      "id": 24,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "16435d739003d9b2548e0ad28ef0bb54b4283e67fe588ac787b50147ccbac3d5"
+      },
+      "target": {
+        "title": "【2026年最新】『自律エージェント・メッシュ』時代の経営革新とSaaSの終焉",
+        "description": "これまでの経営モデルでは、人間が重要な意思決定を行い、AIはそのサポート役でしたが、今日、企業は「自律エージェント・メッシュ」による運営に直面しています。",
+        "category": "dx-organization",
+        "body_markdown_sha256": "16435d739003d9b2548e0ad28ef0bb54b4283e67fe588ac787b50147ccbac3d5",
+        "published_at": "2026-08-07T23:01:15.648Z",
+        "updated_at": "2026-08-14T22:30:34.000Z",
+        "seo_status": "ready"
+      }
+    },
+    {
+      "id": 27,
+      "expected": {
+        "seo_status": "legacy",
+        "category": "uncategorized",
+        "title": null,
+        "description": null,
+        "body_markdown": null,
+        "published_at": null,
+        "updated_at": null,
+        "content_sha256": "4dc6dcf3b68f7347c3d303f802821249d4199dd7a6841344f07df6a889028b68"
+      },
+      "target": {
+        "title": "【2026年最新】企業の運命を変える「自律型エージェント・メッシュ」の衝撃",
+        "description": "現在、企業が求めるのはAIを使った単なる業務効率化ではなく、「自律型エージェント・メッシュ」による完全な業務の再構築です。",
+        "category": "ai-automation",
+        "body_markdown_sha256": "4dc6dcf3b68f7347c3d303f802821249d4199dd7a6841344f07df6a889028b68",
+        "published_at": "2026-08-09T23:01:24.517Z",
+        "updated_at": "2026-08-14T22:30:34.000Z",
+        "seo_status": "ready"
+      }
+    }
+  ]
+}
