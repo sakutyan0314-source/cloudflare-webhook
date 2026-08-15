@@ -10,7 +10,7 @@ def load(name):
     spec=importlib.util.spec_from_file_location(name, ROOT/'scripts'/(name+'.py')); module=importlib.util.module_from_spec(spec); sys.modules[name]=module; spec.loader.exec_module(module); return module
 
 load('d1_conditional_update_audit')
-load('d1_read_only_session')
+read_session=load('d1_read_only_session')
 runner=load('v1_9_1_legacy_backfill_runner')
 module=load('v1_9_1_legacy_backfill_d1_transport')
 MANIFEST=ROOT/'ops'/'v1.9.1-seo-ready-legacy-18-19-21-23-24-27-manifest.json'
@@ -97,5 +97,11 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
         response=transport.conditional_update(plans[18],content(18)); self.assertTrue(response['success'])
         self.assertIn('WHERE id=? AND seo_status=?',edit.calls[0][1]); self.assertIn('RETURNING id',edit.calls[0][1]); self.assertNotIn(';',edit.calls[0][1])
         with self.assertRaises(runner.BackfillSafetyError): runner.run_backfill_session(runner.InMemoryTokenPair('read','edit',lambda:None),ef,rf,plans,BASELINE)
+
+    def test_actual_preflight_select_payload_has_only_fixed_selects_and_matching_params(self):
+        article=read_session.validate_fixed_select_batch(({'sql':module.ARTICLE_SELECT,'params':[18]},))
+        baseline=read_session.validate_fixed_select_batch(({'sql':module.BASELINE_SELECT,'params':[]},))
+        self.assertEqual(('/query','batch',1,True),(article.endpoint_path,article.payload_shape,article.statement_count,article.validator_passed))
+        self.assertEqual(('/query','batch',1,True),(baseline.endpoint_path,baseline.payload_shape,baseline.statement_count,baseline.validator_passed))
 
 if __name__=='__main__': unittest.main()

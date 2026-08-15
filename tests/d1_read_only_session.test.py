@@ -73,6 +73,32 @@ class D1ReadOnlySessionTest(unittest.TestCase):
         with self.assertRaises(module.D1ReadTransportError) as captured: transport.identity()
         self.assertEqual("transport_exception", captured.exception.code)
 
+    def test_http_400_json_diagnostic_exposes_only_safe_metadata(self):
+        body=json.dumps({"success":False,"errors":[{"code":7500,"message":"SQL syntax error near secret-like body"}]}).encode()
+        transport=module.D1ReadOnlyRestTransport("account","database","cfat_dummy",opener=lambda *_args,**_kwargs:Response(400,body=body))
+        with self.assertRaises(module.D1ReadTransportError) as captured: transport.fixed_select_batch(({"sql":"SELECT ?","params":[1]},))
+        error=captured.exception
+        self.assertEqual("invalid_sql_shape",error.code); self.assertEqual(400,error.status)
+        self.assertEqual((400,"application/json",False,1,"7500","invalid_sql_shape"),(error.diagnostic.http_status,error.diagnostic.content_type,error.diagnostic.success_flag,error.diagnostic.error_count,error.diagnostic.error_code,error.diagnostic.error_message_class))
+        self.assertNotIn("secret-like body",str(error)); self.assertNotIn("secret-like body",repr(error.diagnostic))
+
+    def test_400_non_json_empty_and_other_statuses_remain_fail_closed(self):
+        cases=[(Response(400,"text/plain",b"not json"),"unexpected_content_type"),(Response(400,"application/json",b""),"empty_response"),(Response(401,body=b'{"success":false}'),"http_status"),(Response(403,body=b'{"success":false}'),"http_status"),(Response(500,body=b'{"success":false}'),"http_status")]
+        for response, code in cases:
+            transport=module.D1ReadOnlyRestTransport("account","database","cfat_dummy",opener=lambda *_args,r=response,**_kwargs:r)
+            with self.assertRaises(module.D1ReadTransportError) as captured: transport.identity()
+            self.assertEqual(code,captured.exception.code)
+
+    def test_http_400_error_messages_map_to_safe_categories_without_text(self):
+        cases=[("malformed request payload","malformed_request"),("bind parameter count mismatch","parameter_mismatch"),("unsupported query operation","unsupported_query"),("database not found","database_not_found"),("invalid account database id","account_or_database_mismatch"),("unrecognized validation fault","cloudflare_api_validation_error"),(None,"unknown_http_400")]
+        for message, expected in cases:
+            errors=[] if message is None else [{"code":1000,"message":message}]
+            body=json.dumps({"success":False,"errors":errors}).encode()
+            transport=module.D1ReadOnlyRestTransport("account","database","cfat_dummy",opener=lambda *_args,b=body,**_kwargs:Response(400,body=b))
+            with self.assertRaises(module.D1ReadTransportError) as captured: transport.identity()
+            self.assertEqual(expected,captured.exception.code)
+            if message is not None: self.assertNotIn(message,str(captured.exception))
+
     def test_api_success_false_and_metadata_write_signal_stop(self):
         api_false = Response(body=b'{"success":false,"result":{}}')
         transport = module.D1ReadOnlyRestTransport("account", "database", "cfat_dummy", opener=lambda *_args, **_kwargs: api_false)
@@ -88,6 +114,12 @@ class D1ReadOnlySessionTest(unittest.TestCase):
         for sql in ("UPDATE x SET y=1", "SELECT 1; DELETE FROM x", ""):
             with self.assertRaises(module.D1ReadSafetyError): transport.fixed_select_batch(({"sql":sql},))
         self.assertEqual([], calls)
+
+    def test_static_request_shape_rejects_invalid_sql_and_parameter_count_before_http(self):
+        diagnostic=module.validate_fixed_select_batch(({"sql":"SELECT ? AS value","params":[1]}, {"sql":"SELECT 'literal ?' AS value","params":[]}))
+        self.assertEqual(("/query","batch",2,True,True,True),(diagnostic.endpoint_path,diagnostic.payload_shape,diagnostic.statement_count,diagnostic.sql_field_present,diagnostic.params_field_present,diagnostic.validator_passed))
+        for statement, code in (({"sql":"SELECT ?","params":[]},"parameter_mismatch"),({"sql":"SELECT 1; SELECT 2","params":[]},"invalid_sql_shape"),({"sql":"UPDATE x SET y=1","params":[]},"invalid_sql_shape")):
+            with self.assertRaisesRegex(module.D1ReadSafetyError,code): module.validate_fixed_select_batch((statement,))
 
 
 if __name__ == "__main__":

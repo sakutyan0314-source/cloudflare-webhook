@@ -23,14 +23,42 @@ class D1ReadTokenError(ValueError):
 class D1ReadTransportError(RuntimeError):
     """Safe transport classification; never carries response or token text."""
 
-    def __init__(self, code: str, status: int | None = None):
+    def __init__(self, code: str, status: int | None = None, diagnostic: "D1HttpDiagnostic | None" = None):
         self.code = code
         self.status = status
+        self.diagnostic = diagnostic
         super().__init__(f"D1 read transport failed: {code}")
 
 
 class D1ReadSafetyError(RuntimeError):
     """A response violated the approved read-only contract."""
+
+
+@dataclass(frozen=True)
+class D1HttpDiagnostic:
+    """Minimal, safe HTTP/API diagnostics; never includes body/header text."""
+
+    http_status: int | None
+    content_type: str | None
+    response_size: int | None
+    success_flag: bool | None
+    error_count: int | None
+    error_code: str | None
+    error_message_class: str | None
+    result_count: int | None
+    request_stage: str
+
+
+@dataclass(frozen=True)
+class FixedSelectRequestDiagnostic:
+    """Static request shape proof without exposing SQL or parameter values."""
+
+    endpoint_path: str
+    payload_shape: str
+    statement_count: int
+    sql_field_present: bool
+    params_field_present: bool
+    validator_passed: bool
 
 
 _TOKEN_ALLOWED = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -145,23 +173,31 @@ class D1ReadOnlyRestTransport:
                 if callable(close):
                     close()
         except HTTPError as error:
-            raise D1ReadTransportError("http_status", error.code) from None
+            status = error.code
+            content_type = str(error.headers.get("Content-Type", "")) if error.headers else ""
+            try:
+                raw = error.read()
+            except OSError:
+                raw = b""
+            diagnostic = _safe_http_diagnostic(status, content_type, raw, "response_received")
+            raise D1ReadTransportError(_classify_http_error(diagnostic), status, diagnostic) from None
         except (URLError, TimeoutError, OSError):
             raise D1ReadTransportError("transport_exception") from None
+        diagnostic = _safe_http_diagnostic(status, content_type, raw, "response_received")
         if not content_type.lower().startswith("application/json"):
-            raise D1ReadTransportError("unexpected_content_type", status)
+            raise D1ReadTransportError("unexpected_content_type", status, diagnostic)
         if not raw:
-            raise D1ReadTransportError("empty_response", status)
+            raise D1ReadTransportError("empty_response", status, diagnostic)
         try:
             decoded = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise D1ReadTransportError("json_parse_failed", status) from None
+            raise D1ReadTransportError("json_parse_failed", status, diagnostic) from None
         if not isinstance(decoded, Mapping):
-            raise D1ReadTransportError("invalid_json_shape", status)
+            raise D1ReadTransportError("invalid_json_shape", status, diagnostic)
         if status < 200 or status >= 300:
-            raise D1ReadTransportError("http_status", status)
+            raise D1ReadTransportError(_classify_http_error(diagnostic), status, diagnostic)
         if decoded.get("success") is not True:
-            raise D1ReadTransportError("api_success_false", status)
+            raise D1ReadTransportError("api_success_false", status, diagnostic)
         return D1JsonResponse(status, content_type.split(";", 1)[0], len(raw), decoded)
 
     def identity(self) -> D1JsonResponse:
@@ -172,9 +208,94 @@ class D1ReadOnlyRestTransport:
         return self._request("GET", "/time_travel/bookmark")
 
     def fixed_select_batch(self, statements: Sequence[Mapping[str, object]]) -> D1JsonResponse:
-        if not statements or any(not isinstance(item.get("sql"), str) or not item["sql"].lstrip().upper().startswith("SELECT ") or ";" in item["sql"].rstrip(";") for item in statements):
-            raise D1ReadSafetyError("D1 Read transport accepts fixed single SELECT statements only")
+        validate_fixed_select_batch(statements)
         return self._request("POST", "/query", {"batch": list(statements)})
+
+
+def _placeholder_count(sql: str) -> int:
+    """Count positional placeholders outside SQLite string literals."""
+    count, quote, index = 0, None, 0
+    while index < len(sql):
+        character = sql[index]
+        if quote:
+            if character == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    index += 1
+                else:
+                    quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "?":
+            count += 1
+        index += 1
+    return count
+
+
+def validate_fixed_select_batch(statements: Sequence[Mapping[str, object]]) -> FixedSelectRequestDiagnostic:
+    """Prove request shape before HTTP; rejects DML, DDL, and multi-statements."""
+    if not isinstance(statements, Sequence) or isinstance(statements, (str, bytes)) or not statements:
+        raise D1ReadSafetyError("invalid_sql_shape")
+    for item in statements:
+        sql = item.get("sql") if isinstance(item, Mapping) else None
+        params = item.get("params") if isinstance(item, Mapping) else None
+        if not isinstance(sql, str) or not re.match(r"^SELECT\b", sql.lstrip(), re.IGNORECASE):
+            raise D1ReadSafetyError("invalid_sql_shape")
+        if ";" in sql.rstrip(";"):
+            raise D1ReadSafetyError("invalid_sql_shape")
+        if not isinstance(params, Sequence) or isinstance(params, (str, bytes)):
+            raise D1ReadSafetyError("parameter_mismatch")
+        if _placeholder_count(sql) != len(params):
+            raise D1ReadSafetyError("parameter_mismatch")
+    return FixedSelectRequestDiagnostic("/query", "batch", len(statements), True, True, True)
+
+
+def _safe_http_diagnostic(status: int | None, content_type: str | None, raw: bytes, request_stage: str) -> D1HttpDiagnostic:
+    """Parse only error metadata and classify message text without retaining it."""
+    decoded: Mapping[str, Any] | None = None
+    if content_type and content_type.lower().startswith("application/json") and raw:
+        try:
+            candidate = json.loads(raw.decode("utf-8"))
+            if isinstance(candidate, Mapping):
+                decoded = candidate
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+    success = decoded.get("success") if decoded else None
+    success_flag = success if isinstance(success, bool) else None
+    errors = decoded.get("errors") if decoded else None
+    error_items = errors if isinstance(errors, list) and all(isinstance(item, Mapping) for item in errors) else []
+    error_code = None
+    if error_items and isinstance(error_items[0].get("code"), (str, int)):
+        error_code = str(error_items[0]["code"])
+    message = error_items[0].get("message") if error_items else None
+    message_class = _classify_error_message(message) if isinstance(message, str) else None
+    result = decoded.get("result") if decoded else None
+    result_count = len(result) if isinstance(result, list) else (1 if isinstance(result, Mapping) else None)
+    return D1HttpDiagnostic(status, content_type.split(";", 1)[0] if content_type else None, len(raw), success_flag, len(error_items) if decoded is not None else None, error_code, message_class, result_count, request_stage)
+
+
+def _classify_error_message(message: str) -> str:
+    lowered = message.lower()
+    if "json" in lowered:
+        return "invalid_json"
+    if any(term in lowered for term in ("parameter", "bind", "placeholder")):
+        return "parameter_mismatch"
+    if any(term in lowered for term in ("syntax", "sql", "statement")):
+        return "invalid_sql_shape"
+    if any(term in lowered for term in ("unsupported", "not allowed", "not support")):
+        return "unsupported_query"
+    if "database" in lowered and any(term in lowered for term in ("not found", "does not exist", "unknown")):
+        return "database_not_found"
+    if any(term in lowered for term in ("account", "database id", "database_id")) and any(term in lowered for term in ("mismatch", "invalid", "not found")):
+        return "account_or_database_mismatch"
+    if any(term in lowered for term in ("malformed", "invalid request", "bad request")):
+        return "malformed_request"
+    return "cloudflare_api_validation_error"
+
+
+def _classify_http_error(diagnostic: D1HttpDiagnostic) -> str:
+    if diagnostic.http_status == 400:
+        return diagnostic.error_message_class or "unknown_http_400"
+    return "http_status"
 
 
 def validate_read_only_result_sets(payload: Mapping[str, Any], expected_count: int) -> list[Mapping[str, Any]]:
