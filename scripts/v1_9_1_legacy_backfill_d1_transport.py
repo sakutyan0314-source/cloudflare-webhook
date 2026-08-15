@@ -29,14 +29,20 @@ ARTICLE_SELECT = """SELECT id, content, seo_status, category, title, description
 body_markdown, published_at, updated_at
 FROM curation_logs WHERE id=?"""
 FK_SELECT = "SELECT * FROM pragma_foreign_key_check"
-BASELINE_SELECT = """SELECT
- (SELECT COUNT(*) FROM pipeline_runs WHERE status IN ('completed', 'sent')) AS pipeline_completed_sent,
- (SELECT COUNT(*) FROM pipeline_runs WHERE status='sending') AS sending,
- (SELECT COUNT(*) FROM reconciliation_events) AS reconciliation_events,
- (SELECT COUNT(*) FROM search_console_sync_runs) AS sync_runs,
- (SELECT COUNT(*) FROM search_console_page_daily_metrics) AS page_daily_metrics,
- (SELECT COUNT(*) FROM search_console_query_page_daily_metrics) AS query_page_daily_metrics,
- (SELECT COUNT(*) FROM affiliate_click_events) AS affiliate_click_events"""
+# Do not combine these independent counts with scalar subqueries.  The D1
+# Query API accepted the article/FK forms but rejected the prior FROM-less,
+# nested-count expression.  Each statement below intentionally matches the
+# established single-query reader pattern: one SELECT, one COUNT, optional
+# simple WHERE, and one fixed alias.
+BASELINE_SELECTS = (
+    ("pipeline_completed_sent", "SELECT COUNT(*) AS pipeline_completed_sent FROM pipeline_runs WHERE status='completed' OR status='sent'"),
+    ("sending", "SELECT COUNT(*) AS sending FROM pipeline_runs WHERE status='sending'"),
+    ("reconciliation_events", "SELECT COUNT(*) AS reconciliation_events FROM reconciliation_events"),
+    ("sync_runs", "SELECT COUNT(*) AS sync_runs FROM search_console_sync_runs"),
+    ("page_daily_metrics", "SELECT COUNT(*) AS page_daily_metrics FROM search_console_page_daily_metrics"),
+    ("query_page_daily_metrics", "SELECT COUNT(*) AS query_page_daily_metrics FROM search_console_query_page_daily_metrics"),
+    ("affiliate_click_events", "SELECT COUNT(*) AS affiliate_click_events FROM affiliate_click_events"),
+)
 
 
 class LegacyD1TransportError(BackfillSafetyError):
@@ -109,10 +115,14 @@ class LegacyReadD1Transport:
         return len(self._select(FK_SELECT))
 
     def baseline(self) -> Mapping[str, int]:
-        row = _rows({"results": self._select(BASELINE_SELECT)}, 1)[0]
-        if not row or not all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in row.values()):
-            raise BackfillSafetyError("baseline_read_invalid")
-        return dict(row)
+        baseline: dict[str, int] = {}
+        for key, sql in BASELINE_SELECTS:
+            row = _rows({"results": self._select(sql)}, 1)[0]
+            value = row.get(key)
+            if set(row) != {key} or not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise BackfillSafetyError("baseline_read_invalid")
+            baseline[key] = value
+        return baseline
 
 
 class ReadD1TransportFactory:

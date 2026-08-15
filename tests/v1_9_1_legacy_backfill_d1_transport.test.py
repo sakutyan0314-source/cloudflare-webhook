@@ -24,8 +24,8 @@ class Response:
     def __init__(self,payload): self.payload=payload
 
 class ReadClient:
-    def __init__(self, plans, fail_pre=None, post_bad=None):
-        self.plans,self.fail_pre,self.post_bad,self.rows,self.calls=plans,fail_pre,post_bad,{},[]
+    def __init__(self, plans, fail_pre=None, post_bad=None, baseline=BASELINE):
+        self.plans,self.fail_pre,self.post_bad,self.baseline_value,self.rows,self.calls=plans,fail_pre,post_bad,baseline,{},[]
         for article_id, plan in plans.items(): self.rows[article_id]={'id':article_id,'content':content(article_id),**plan['expected']}
     def identity(self): self.calls.append(('identity',)); return Response({'success':True,'result':{'name':'prod','uuid':'db'}})
     def fixed_select_batch(self, statements):
@@ -37,7 +37,9 @@ class ReadClient:
             if article_id==self.post_bad and self.rows[article_id]['seo_status']=='ready': row['title']='wrong'
             rows=[row]
         elif sql==module.FK_SELECT: rows=[]
-        else: rows=[dict(BASELINE)]
+        else:
+            key=next((key for key,candidate in module.BASELINE_SELECTS if candidate==sql),None)
+            rows=[{key:self.baseline_value[key]}] if key else []
         return Response({'success':True,'result':[{'success':True,'meta':{'changed_db':False,'rows_written':0},'results':rows}]})
 
 class EditClient:
@@ -102,10 +104,11 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
     def test_actual_preflight_select_payload_has_only_fixed_selects_and_matching_params(self):
         article,_=read_session.build_fixed_select_request(({'sql':module.ARTICLE_SELECT,'params':[18]},))
         fk,_=read_session.build_fixed_select_request(({'sql':module.FK_SELECT,'params':[]},))
-        baseline,_=read_session.build_fixed_select_request(({'sql':module.BASELINE_SELECT,'params':[]},))
         self.assertEqual(('/query','single',1,True),(article.endpoint_path,article.payload_shape,article.statement_count,article.validator_passed))
         self.assertEqual(('/query','single',1,True),(fk.endpoint_path,fk.payload_shape,fk.statement_count,fk.validator_passed))
-        self.assertEqual(('/query','single',1,True),(baseline.endpoint_path,baseline.payload_shape,baseline.statement_count,baseline.validator_passed))
+        for _key, sql in module.BASELINE_SELECTS:
+            baseline,_=read_session.build_fixed_select_request(({'sql':sql,'params':[]},))
+            self.assertEqual(('/query','single',1,True),(baseline.endpoint_path,baseline.payload_shape,baseline.statement_count,baseline.validator_passed))
 
     def test_actual_fixed_selects_compile_in_local_sqlite(self):
         connection=sqlite3.connect(':memory:')
@@ -118,7 +121,29 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
             CREATE TABLE search_console_query_page_daily_metrics (id INTEGER);
             CREATE TABLE affiliate_click_events (id INTEGER);
         ''')
-        for sql, params in ((module.ARTICLE_SELECT,(18,)),(module.FK_SELECT,()),(module.BASELINE_SELECT,())):
+        for sql, params in ((module.ARTICLE_SELECT,(18,)),(module.FK_SELECT,()),*((sql,()) for _key,sql in module.BASELINE_SELECTS)):
             connection.execute(sql,params).fetchall()
+
+    def test_baseline_aggregation_handles_zero_counts_and_rejects_malformed_or_write_metadata(self):
+        plans,read,edit,rf,ef,_received=self.setup(); reader=rf.create_read_transport('read')
+        self.assertEqual(BASELINE,reader.baseline())
+        zero_reader=module.LegacyReadD1Transport(ReadClient(plans,baseline={key:0 for key in BASELINE}))
+        self.assertEqual({key:0 for key in BASELINE},zero_reader.baseline())
+        class BadBaselineClient(ReadClient):
+            def fixed_select_batch(self, statements):
+                response=super().fixed_select_batch(statements)
+                sql=statements[0]['sql']
+                if any(candidate==sql for _key,candidate in module.BASELINE_SELECTS):
+                    response.payload['result'][0]['meta']['changed_db']=True
+                return response
+        bad=BadBaselineClient(plans); reader=module.LegacyReadD1Transport(bad)
+        with self.assertRaises(read_session.D1ReadSafetyError): reader.baseline()
+        class MalformedBaselineClient(ReadClient):
+            def fixed_select_batch(self, statements):
+                response=super().fixed_select_batch(statements)
+                sql=statements[0]['sql']
+                if any(candidate==sql for _key,candidate in module.BASELINE_SELECTS): response.payload['result'][0]['results']=[{'wrong_key':0}]
+                return response
+        with self.assertRaises(runner.BackfillSafetyError): module.LegacyReadD1Transport(MalformedBaselineClient(plans)).baseline()
 
 if __name__=='__main__': unittest.main()
