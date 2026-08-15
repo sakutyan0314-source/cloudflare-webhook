@@ -114,8 +114,8 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
         connection=sqlite3.connect(':memory:')
         connection.executescript('''
             CREATE TABLE curation_logs (id INTEGER, content TEXT, seo_status TEXT, category TEXT, title TEXT, description TEXT, body_markdown TEXT, published_at TEXT, updated_at TEXT);
-            CREATE TABLE pipeline_runs (status TEXT);
-            CREATE TABLE reconciliation_events (id INTEGER);
+            CREATE TABLE pipeline_runs (status TEXT, notification_status TEXT);
+            CREATE TABLE pipeline_reconciliation_events (id INTEGER);
             CREATE TABLE search_console_sync_runs (id INTEGER);
             CREATE TABLE search_console_page_daily_metrics (id INTEGER);
             CREATE TABLE search_console_query_page_daily_metrics (id INTEGER);
@@ -145,5 +145,16 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
                 if any(candidate==sql for _key,candidate in module.BASELINE_SELECTS): response.payload['result'][0]['results']=[{'wrong_key':0}]
                 return response
         with self.assertRaises(runner.BackfillSafetyError): module.LegacyReadD1Transport(MalformedBaselineClient(plans)).baseline()
+
+    def test_pipeline_baseline_queries_match_migration_schema_and_state_meaning(self):
+        pipeline=(ROOT/'migrations'/'0002_pipeline_reliability.sql').read_text(encoding='utf-8')
+        reconciliation=(ROOT/'migrations'/'0003_pipeline_reconciliation_audit.sql').read_text(encoding='utf-8')
+        baseline=dict(module.BASELINE_SELECTS)
+        self.assertIn('CREATE TABLE pipeline_runs',pipeline)
+        self.assertIn("status TEXT NOT NULL DEFAULT 'running'",pipeline)
+        self.assertIn("notification_status TEXT NOT NULL DEFAULT 'pending'",pipeline)
+        self.assertIn('CREATE TABLE pipeline_reconciliation_events',reconciliation)
+        self.assertIn("status='completed' AND notification_status='sent'",baseline['pipeline_completed_sent'])
+        self.assertIn('FROM pipeline_reconciliation_events',baseline['reconciliation_events'])
 
 if __name__=='__main__': unittest.main()

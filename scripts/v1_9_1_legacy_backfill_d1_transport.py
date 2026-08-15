@@ -35,9 +35,9 @@ FK_SELECT = "SELECT * FROM pragma_foreign_key_check"
 # established single-query reader pattern: one SELECT, one COUNT, optional
 # simple WHERE, and one fixed alias.
 BASELINE_SELECTS = (
-    ("pipeline_completed_sent", "SELECT COUNT(*) AS pipeline_completed_sent FROM pipeline_runs WHERE status='completed' OR status='sent'"),
+    ("pipeline_completed_sent", "SELECT COUNT(*) AS pipeline_completed_sent FROM pipeline_runs WHERE status='completed' AND notification_status='sent'"),
     ("sending", "SELECT COUNT(*) AS sending FROM pipeline_runs WHERE status='sending'"),
-    ("reconciliation_events", "SELECT COUNT(*) AS reconciliation_events FROM reconciliation_events"),
+    ("reconciliation_events", "SELECT COUNT(*) AS reconciliation_events FROM pipeline_reconciliation_events"),
     ("sync_runs", "SELECT COUNT(*) AS sync_runs FROM search_console_sync_runs"),
     ("page_daily_metrics", "SELECT COUNT(*) AS page_daily_metrics FROM search_console_page_daily_metrics"),
     ("query_page_daily_metrics", "SELECT COUNT(*) AS query_page_daily_metrics FROM search_console_query_page_daily_metrics"),
