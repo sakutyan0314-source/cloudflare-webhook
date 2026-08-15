@@ -26,9 +26,10 @@ class ConditionalUpdateAuditTest(unittest.TestCase):
     def test_rows_written_is_optional_but_never_used_as_record_cardinality(self):
         audit = module.validate_exact_conditional_update(response(rows_written="omitted"), 25)
         self.assertIsNone(audit.rows_written)
+        self.assertEqual(0, module.validate_exact_conditional_update(response(rows_written=0), 25).rows_written)
 
     def test_rejects_non_exact_change_or_returned_id(self):
-        for values in ({"changed": False}, {"changes": 0}, {"changes": 2}, {"rows_written": 0}, {"returned_id": 26}):
+        for values in ({"changed": False}, {"changes": 0}, {"changes": 2}, {"rows_written": -1}, {"returned_id": 26}):
             with self.assertRaises(module.ConditionalUpdateAuditError):
                 module.validate_exact_conditional_update(response(**values), 25)
 

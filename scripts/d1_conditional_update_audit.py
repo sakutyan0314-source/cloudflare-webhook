@@ -38,7 +38,10 @@ def validate_exact_conditional_update(response: Mapping[str, Any], expected_id: 
     changed_db, changes, rows_written = meta.get("changed_db"), meta.get("changes"), meta.get("rows_written")
     if changed_db is not True or changes != 1:
         raise ConditionalUpdateAuditError("D1 conditional update did not change exactly one table row")
-    if rows_written is not None and (not isinstance(rows_written, int) or rows_written < 1):
+    # D1 can count physical/index writes differently across response paths.
+    # It is deliberately reference-only: changed_db + changes + RETURNING
+    # provide the sole proof of one logical article row.
+    if rows_written is not None and (not isinstance(rows_written, int) or isinstance(rows_written, bool) or rows_written < 0):
         raise ConditionalUpdateAuditError("D1 conditional update write metadata is invalid")
     returned_id = rows[0].get("id") if isinstance(rows[0], Mapping) else None
     if returned_id != expected_id:

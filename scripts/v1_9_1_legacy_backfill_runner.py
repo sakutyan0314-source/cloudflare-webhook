@@ -160,7 +160,10 @@ def load_manifest(path: Path) -> dict[int, dict[str, Any]]:
             raise BackfillSafetyError("backfill manifest body copy invariant is unsafe")
         if not isinstance(target.get("title"), str) or not 12 <= len(target["title"]) <= 120 or not isinstance(target.get("description"), str) or not 60 <= len(target["description"]) <= 160:
             raise BackfillSafetyError("backfill manifest metadata is invalid")
-        output[item["id"]] = {"expected": dict(expected), "target": dict(target)}
+        expected_plan = dict(expected)
+        # This is plan identity only; it is not an approved mutable field.
+        expected_plan["id"] = item["id"]
+        output[item["id"]] = {"expected": expected_plan, "target": dict(target)}
     return output
 
 
