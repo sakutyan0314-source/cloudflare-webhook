@@ -51,6 +51,12 @@ class D1ReadOnlySessionTest(unittest.TestCase):
         sets = module.validate_read_only_result_sets(parsed.payload, 1)
         self.assertEqual(200, parsed.status); self.assertEqual("application/json", parsed.content_type); self.assertEqual(1, len(sets)); self.assertTrue(response.closed)
 
+    def test_request_builder_uses_single_shape_for_one_select_and_batch_for_many(self):
+        single_diagnostic, single_payload=module.build_fixed_select_request(({"sql":"SELECT ?","params":[1]},))
+        batch_diagnostic, batch_payload=module.build_fixed_select_request(({"sql":"SELECT 1","params":[]},{"sql":"SELECT 2","params":[]}))
+        self.assertEqual(("single",1),(single_diagnostic.payload_shape,single_diagnostic.statement_count)); self.assertEqual({"sql":"SELECT ?","params":[1]},single_payload)
+        self.assertEqual(("batch",2),(batch_diagnostic.payload_shape,batch_diagnostic.statement_count)); self.assertEqual("batch",next(iter(batch_payload)))
+
     def test_bookmark_is_the_only_additional_read_only_route(self):
         response = Response(body=b'{"success":true,"result":{"bookmark":"safe-bookmark"}}')
         transport = module.D1ReadOnlyRestTransport("account", "database", "cfat_dummy", opener=lambda *_args, **_kwargs: response)

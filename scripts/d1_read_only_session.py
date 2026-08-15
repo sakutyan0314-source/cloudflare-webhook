@@ -208,8 +208,8 @@ class D1ReadOnlyRestTransport:
         return self._request("GET", "/time_travel/bookmark")
 
     def fixed_select_batch(self, statements: Sequence[Mapping[str, object]]) -> D1JsonResponse:
-        validate_fixed_select_batch(statements)
-        return self._request("POST", "/query", {"batch": list(statements)})
+        _diagnostic, payload = build_fixed_select_request(statements)
+        return self._request("POST", "/query", payload)
 
 
 def _placeholder_count(sql: str) -> int:
@@ -247,6 +247,26 @@ def validate_fixed_select_batch(statements: Sequence[Mapping[str, object]]) -> F
         if _placeholder_count(sql) != len(params):
             raise D1ReadSafetyError("parameter_mismatch")
     return FixedSelectRequestDiagnostic("/query", "batch", len(statements), True, True, True)
+
+
+def build_fixed_select_request(
+    statements: Sequence[Mapping[str, object]],
+) -> tuple[FixedSelectRequestDiagnostic, Mapping[str, object]]:
+    """Build the documented single-query form for one SELECT, batch for many.
+
+    The Cloudflare endpoint accepts both forms.  Using the single-query form
+    for one fixed SELECT matches the established production page-daily reader
+    and removes an unnecessary one-element batch wrapper.
+    """
+    validated = validate_fixed_select_batch(statements)
+    normalized = list(statements)
+    if len(normalized) == 1:
+        statement = normalized[0]
+        return (
+            FixedSelectRequestDiagnostic("/query", "single", 1, True, True, True),
+            {"sql": statement["sql"], "params": list(statement["params"])},
+        )
+    return validated, {"batch": normalized}
 
 
 def _safe_http_diagnostic(status: int | None, content_type: str | None, raw: bytes, request_stage: str) -> D1HttpDiagnostic:

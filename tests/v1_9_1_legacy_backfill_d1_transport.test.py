@@ -2,6 +2,7 @@ import copy
 import hashlib
 import importlib.util
 import pathlib
+import sqlite3
 import sys
 import unittest
 
@@ -99,9 +100,25 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
         with self.assertRaises(runner.BackfillSafetyError): runner.run_backfill_session(runner.InMemoryTokenPair('read','edit',lambda:None),ef,rf,plans,BASELINE)
 
     def test_actual_preflight_select_payload_has_only_fixed_selects_and_matching_params(self):
-        article=read_session.validate_fixed_select_batch(({'sql':module.ARTICLE_SELECT,'params':[18]},))
-        baseline=read_session.validate_fixed_select_batch(({'sql':module.BASELINE_SELECT,'params':[]},))
-        self.assertEqual(('/query','batch',1,True),(article.endpoint_path,article.payload_shape,article.statement_count,article.validator_passed))
-        self.assertEqual(('/query','batch',1,True),(baseline.endpoint_path,baseline.payload_shape,baseline.statement_count,baseline.validator_passed))
+        article,_=read_session.build_fixed_select_request(({'sql':module.ARTICLE_SELECT,'params':[18]},))
+        fk,_=read_session.build_fixed_select_request(({'sql':module.FK_SELECT,'params':[]},))
+        baseline,_=read_session.build_fixed_select_request(({'sql':module.BASELINE_SELECT,'params':[]},))
+        self.assertEqual(('/query','single',1,True),(article.endpoint_path,article.payload_shape,article.statement_count,article.validator_passed))
+        self.assertEqual(('/query','single',1,True),(fk.endpoint_path,fk.payload_shape,fk.statement_count,fk.validator_passed))
+        self.assertEqual(('/query','single',1,True),(baseline.endpoint_path,baseline.payload_shape,baseline.statement_count,baseline.validator_passed))
+
+    def test_actual_fixed_selects_compile_in_local_sqlite(self):
+        connection=sqlite3.connect(':memory:')
+        connection.executescript('''
+            CREATE TABLE curation_logs (id INTEGER, content TEXT, seo_status TEXT, category TEXT, title TEXT, description TEXT, body_markdown TEXT, published_at TEXT, updated_at TEXT);
+            CREATE TABLE pipeline_runs (status TEXT);
+            CREATE TABLE reconciliation_events (id INTEGER);
+            CREATE TABLE search_console_sync_runs (id INTEGER);
+            CREATE TABLE search_console_page_daily_metrics (id INTEGER);
+            CREATE TABLE search_console_query_page_daily_metrics (id INTEGER);
+            CREATE TABLE affiliate_click_events (id INTEGER);
+        ''')
+        for sql, params in ((module.ARTICLE_SELECT,(18,)),(module.FK_SELECT,()),(module.BASELINE_SELECT,())):
+            connection.execute(sql,params).fetchall()
 
 if __name__=='__main__': unittest.main()
