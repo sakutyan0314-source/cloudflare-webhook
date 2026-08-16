@@ -36,6 +36,7 @@ class EditMock:
         if self.mode=='unknown': raise runner_module.OutcomeUnknownError('unknown')
         if self.mode=='bad_response': return {'success':True,'result':[{'success':True,'meta':{'changed_db':True,'changes':0},'results':[]}]}
         row=self.read.rows[article_id]; row.update({key:plan['target'][key] for key in ('title','description','category','published_at','updated_at','seo_status')}); row['body_markdown']=content
+        if self.mode=='post_bad': row['title']='not-approved'
         return {'success':True,'result':[{'success':True,'meta':{'changed_db':True,'changes':1,'rows_written':3},'results':[{'id':article_id}]}]}
 
 class ReadFactory:
@@ -96,6 +97,28 @@ class LegacyRunnerTest(unittest.TestCase):
         for key in ('pipeline_completed_sent','sync_runs','page_daily_metrics','affiliate_click_events'):
             self.assertEqual('monotonic_increase_observed',audit[key]['classification'])
 
+    def test_baseline_advances_after_each_completed_article_and_is_used_next(self):
+        read,edit,runner,baseline=self.setup_runner()
+        plans={key:value for key,value in read.plans.items() if key in runner_module.RESUME_TARGET_ORDER}
+        read.plans=plans
+        runner=runner_module.LegacyBackfillRunner(read,edit,plans,runner_module.RESUME_TARGET_ORDER)
+        snapshots=[
+            dict(baseline,pipeline_completed_sent=7),
+            dict(baseline,pipeline_completed_sent=7,sync_runs=5),
+            dict(baseline,pipeline_completed_sent=8,sync_runs=5,page_daily_metrics=4),
+            dict(baseline,pipeline_completed_sent=8,sync_runs=6,page_daily_metrics=4,affiliate_click_events=4),
+            dict(baseline,pipeline_completed_sent=9,sync_runs=6,page_daily_metrics=4,affiliate_click_events=4),
+        ]
+        read.baseline=lambda: dict(snapshots.pop(0))
+        results=runner.run(baseline)
+        self.assertEqual(5,len(runner.non_target_audit)); self.assertEqual(5,len(results))
+        records=runner.non_target_audit
+        self.assertEqual(baseline,records[0].previous_baseline)
+        for previous, current in zip(records,records[1:]):
+            self.assertEqual(previous.observed_current,current.previous_baseline)
+        self.assertTrue(all(record.baseline_advanced and record.advanced_at for record in records))
+        self.assertIn('baseline_advanced',runner.execution_audit[-1].states)
+
     def test_decrease_and_safety_critical_state_stop_after_verified_update(self):
         for changed, code in (({'pipeline_completed_sent':5},'unexpected_decrease'),({'sending':1},'safety_critical_change'),({'reconciliation_events':1},'safety_critical_change')):
             read,edit,runner,baseline=self.setup_runner(); original=read.baseline
@@ -105,6 +128,18 @@ class LegacyRunnerTest(unittest.TestCase):
             record=runner.execution_audit[-1]
             self.assertIn('update_result_verified',record.states)
             self.assertTrue(record.changed_db); self.assertEqual(1,record.changes); self.assertEqual(18,record.returned_id)
+            self.assertFalse(runner.non_target_audit[-1].baseline_advanced)
+
+    def test_post_read_unknown_and_remaining_target_failures_do_not_advance_baseline(self):
+        for mode, expected_error in (('post_bad','post_update_title_mismatch'),('unknown','unknown')):
+            read,edit,runner,baseline=self.setup_runner(mode)
+            with self.assertRaisesRegex(runner_module.BackfillSafetyError,expected_error): runner.run(baseline)
+            self.assertEqual((),runner.non_target_audit)
+        read,edit,runner,baseline=self.setup_runner(); original=read.foreign_key_check
+        def changed_remaining_target(): read.rows[19]['category']='changed'; return original()
+        read.foreign_key_check=changed_remaining_target
+        with self.assertRaisesRegex(runner_module.BackfillSafetyError,'remaining_target_state_changed'): runner.run(baseline)
+        self.assertEqual((),runner.non_target_audit)
 
     def test_parallel_change_to_a_remaining_target_stops_after_verified_update(self):
         read,edit,runner,baseline=self.setup_runner(); original=read.foreign_key_check

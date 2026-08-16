@@ -9,7 +9,7 @@ persists either token, and stops at the first unsafe article result.
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import getpass
@@ -84,7 +84,14 @@ class UpdateAuditRecord:
 class NonTargetStateAudit:
     """Safe counter-only verification after a completed target-article update."""
 
+    article_id: int
+    previous_baseline: Mapping[str, int]
+    observed_current: Mapping[str, int]
+    delta: Mapping[str, int]
+    counter_classifications: Mapping[str, str]
     counters: Mapping[str, Mapping[str, int | str]]
+    baseline_advanced: bool
+    advanced_at: str | None
 
 
 _MONOTONIC_COUNTERS = frozenset({
@@ -302,11 +309,20 @@ class LegacyBackfillRunner:
             confirmed_at=None if audit is None else datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         ))
 
-    def _verify_non_target_state(self, expected: Mapping[str, int]) -> None:
+    def _verify_non_target_state(self, article_id: int, expected: Mapping[str, int]) -> NonTargetStateAudit:
         current = dict(self._read.baseline())
         if set(expected) != _BASELINE_KEYS or set(current) != _BASELINE_KEYS:
             raise BackfillSafetyError("baseline_shape_invalid")
         counters: dict[str, dict[str, int | str]] = {}
+        delta_values: dict[str, int] = {}
+        classifications: dict[str, str] = {}
+
+        def record_failure() -> None:
+            self._non_target_audit.append(NonTargetStateAudit(
+                article_id, dict(expected), current, delta_values, classifications,
+                counters, False, None,
+            ))
+
         for key in sorted(_BASELINE_KEYS):
             baseline, value = expected[key], current[key]
             if not isinstance(baseline, int) or isinstance(baseline, bool) or baseline < 0:
@@ -314,21 +330,27 @@ class LegacyBackfillRunner:
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise BackfillSafetyError("current_baseline_invalid")
             delta = value - baseline
+            delta_values[key] = delta
             if key in _SAFETY_CRITICAL_COUNTERS:
                 # Both represent no-active/no-reconciliation-error states.  Any
                 # non-zero value is unsafe even if a prior baseline was corrupt.
                 classification = "unchanged" if value == 0 else "safety_critical_change"
                 counters[key] = {"baseline": baseline, "current": value, "delta": delta, "classification": classification}
+                classifications[key] = classification
                 if value != 0:
-                    self._non_target_audit.append(NonTargetStateAudit(counters))
+                    record_failure()
                     raise BackfillSafetyError("safety_critical_change")
             else:
                 classification = "unchanged" if delta == 0 else ("monotonic_increase_observed" if delta > 0 else "unexpected_decrease")
                 counters[key] = {"baseline": baseline, "current": value, "delta": delta, "classification": classification}
+                classifications[key] = classification
                 if delta < 0:
-                    self._non_target_audit.append(NonTargetStateAudit(counters))
+                    record_failure()
                     raise BackfillSafetyError("unexpected_decrease")
-        self._non_target_audit.append(NonTargetStateAudit(counters))
+        return NonTargetStateAudit(
+            article_id, dict(expected), current, delta_values, classifications,
+            counters, False, None,
+        )
 
     def _verify_remaining_target_articles(self) -> None:
         """Fail closed if a not-yet-sent approved target was altered in parallel."""
@@ -345,6 +367,7 @@ class LegacyBackfillRunner:
 
     def run(self, expected_baseline: Mapping[str, int]) -> list[ArticleResult]:
         output: list[ArticleResult] = []
+        current_baseline = dict(expected_baseline)
         for article_id in self._execution_order:
             if article_id in self._sent:
                 raise BackfillSafetyError("duplicate_update_attempt")
@@ -380,8 +403,18 @@ class LegacyBackfillRunner:
             if self._read.foreign_key_check() != 0:
                 raise BackfillSafetyError("foreign_key_check_failed")
             self._verify_remaining_target_articles()
-            self._verify_non_target_state(expected_baseline)
-            states += ("non_target_state_verified", "article_completed")
+            baseline_audit = self._verify_non_target_state(article_id, current_baseline)
+            states += ("non_target_state_verified",)
+            self._append_state(article_id, states, audit, status)
+            baseline_audit = replace(
+                baseline_audit, baseline_advanced=True,
+                advanced_at=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            )
+            self._non_target_audit.append(baseline_audit)
+            current_baseline = dict(baseline_audit.observed_current)
+            states += ("baseline_advanced",)
+            self._append_state(article_id, states, audit, status)
+            states += ("article_completed",)
             self._append_state(article_id, states, audit, status)
             output.append(ArticleResult(article_id, audit.changed_db, audit.changes, audit.rows_written, audit.returned_id))
         return output
