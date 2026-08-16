@@ -113,6 +113,14 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
         self.assertEqual(200,response['_safe_http_status'])
         self.assertNotIn('Authorization',repr(response)); self.assertNotIn('edit',repr(response))
 
+    def test_resume_edit_transport_rejects_id_18_before_d1_send(self):
+        plans,read,edit,_rf,_ef,_received=self.setup()
+        factory=module.ResumeEditD1TransportFactory(module.LegacyD1Target('account','db','prod'),lambda _target, _token:edit)
+        transport=factory.create_resume_edit_transport('edit')
+        with self.assertRaisesRegex(runner.BackfillSafetyError,'resume_update_article_id_rejected'):
+            transport.conditional_update(plans[18],content(18))
+        self.assertEqual([],edit.calls)
+
     def test_actual_preflight_select_payload_has_only_fixed_selects_and_matching_params(self):
         article,_=read_session.build_fixed_select_request(({'sql':module.ARTICLE_SELECT,'params':[18]},))
         fk,_=read_session.build_fixed_select_request(({'sql':module.FK_SELECT,'params':[]},))

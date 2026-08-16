@@ -48,6 +48,9 @@ class EditFactory:
     def __init__(self, edit): self.edit, self.tokens = edit, []
     def create_edit_transport(self, token): self.tokens.append(token); return self.edit
 
+class ResumeEditFactory(EditFactory):
+    def create_resume_edit_transport(self, token): self.tokens.append(token); return self.edit
+
 class LegacyRunnerTest(unittest.TestCase):
     def plans(self):
         plans=copy.deepcopy(runner_module.load_manifest(MANIFEST))
@@ -62,6 +65,13 @@ class LegacyRunnerTest(unittest.TestCase):
         cleared=[]; pair=runner_module.InMemoryTokenPair('read_dummy','edit_dummy',lambda:cleared.append(True))
         self.assertNotIn('read_dummy',repr(pair)); self.assertNotIn('edit_dummy',repr(pair)); self.assertEqual('read_dummy',pair.read_token()); self.assertEqual('edit_dummy',pair.edit_token()); pair.close(); self.assertEqual([True],cleared)
         with self.assertRaises(runner_module.BackfillSafetyError): runner_module.InMemoryTokenPair('same','same')
+
+    def test_resume_target_set_is_fixed_before_tokens_and_excludes_id_18(self):
+        valid=runner_module.load_resume_manifest(MANIFEST,(19,21,23,24,27))
+        self.assertEqual((19,21,23,24,27),tuple(valid)); self.assertNotIn(18,valid)
+        for invalid in ((18,19,21,23,24,27),(19,22,21,23,24,27),(19,25,21,23,24,27),(19,21,23,24),(21,19,23,24,27),(19,21,21,24,27)):
+            with self.assertRaisesRegex(runner_module.BackfillSafetyError,'resume_target_set_rejected'):
+                runner_module.load_resume_manifest(MANIFEST,invalid)
     def test_sequential_read_edit_read_completes_in_fixed_order(self):
         read,edit,runner,baseline=self.setup_runner(); results=runner.run(baseline)
         self.assertEqual(list(runner_module.BACKFILL_ORDER),[item.article_id for item in results]); self.assertEqual(list(runner_module.BACKFILL_ORDER),[item[1] for item in edit.calls]); self.assertTrue(all(item.changes==1 and item.returned_id==item.article_id for item in results)); self.assertEqual(27,len([item for item in read.calls if item[0]=='read']))
@@ -137,5 +147,14 @@ class LegacyRunnerTest(unittest.TestCase):
         with self.assertRaises(runner_module.BackfillSafetyError):
             runner_module.run_backfill_session(runner_module.InMemoryTokenPair('read2','edit2',lambda:role_error_cleanup.append(True)),edit_factory,read_factory,read.plans,baseline)
         self.assertEqual([True],role_error_cleanup)
+
+    def test_resume_session_executes_only_five_articles_without_six_article_fallback(self):
+        read,edit,_runner,baseline=self.setup_runner(); plans={key:value for key,value in read.plans.items() if key in runner_module.RESUME_TARGET_ORDER}
+        read.plans=plans
+        pair=runner_module.InMemoryTokenPair('resume_read','resume_edit',lambda:None)
+        results=runner_module.run_resume_backfill_session(pair,ReadFactory(read),ResumeEditFactory(edit),plans,baseline)
+        self.assertEqual(list(runner_module.RESUME_TARGET_ORDER),[item.article_id for item in results])
+        self.assertEqual(list(runner_module.RESUME_TARGET_ORDER),[call[1] for call in edit.calls])
+        self.assertNotIn(18,[call[1] for call in edit.calls])
 
 if __name__=='__main__': unittest.main()

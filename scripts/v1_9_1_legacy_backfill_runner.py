@@ -24,7 +24,10 @@ from d1_conditional_update_audit import ConditionalUpdateAudit, validate_exact_c
 from d1_read_only_session import normalize_d1_read_token
 
 
+# The historical six-article manifest remains immutable audit evidence.  A
+# resumed production run must use RESUME_TARGET_ORDER, never a filtered loop.
 BACKFILL_ORDER = (18, 19, 21, 23, 24, 27)
+RESUME_TARGET_ORDER = (19, 21, 23, 24, 27)
 ALLOWED_CATEGORIES = frozenset({
     "ai-automation", "saas-cloud", "security-governance",
     "engineering-infrastructure", "dx-organization", "marketing-cx",
@@ -122,6 +125,12 @@ class EditTransportFactory(Protocol):
     def create_edit_transport(self, token: str) -> EditTransport: ...
 
 
+class ResumeEditTransportFactory(EditTransportFactory, Protocol):
+    """A resume-only edit factory whose transport excludes ID 18 by design."""
+
+    def create_resume_edit_transport(self, token: str) -> EditTransport: ...
+
+
 class InMemoryTokenPair(AbstractContextManager["InMemoryTokenPair"]):
     """Separate, non-repr token slots that are cleared on every exit path."""
 
@@ -198,6 +207,21 @@ def load_manifest(path: Path) -> dict[int, dict[str, Any]]:
     return output
 
 
+def load_resume_manifest(path: Path, target_ids: Sequence[int]) -> dict[int, dict[str, Any]]:
+    """Prepare only the fixed approved resume set before any token/D1 access."""
+    requested = tuple(target_ids)
+    if requested != RESUME_TARGET_ORDER:
+        raise BackfillSafetyError("resume_target_set_rejected")
+    if len(set(requested)) != len(requested) or 18 in requested:
+        raise BackfillSafetyError("resume_target_set_rejected")
+    all_plans = load_manifest(path)
+    if not set(requested) <= set(all_plans):
+        raise BackfillSafetyError("resume_target_not_in_manifest")
+    # Return a new map with no ID 18 entry: callers cannot derive an update
+    # queue for ID 18 from this resume object.
+    return {article_id: all_plans[article_id] for article_id in requested}
+
+
 def validate_pre_update(article_id: int, row: Mapping[str, Any], plan: Mapping[str, Any]) -> str:
     """Validate the current row before its sole permitted UPDATE attempt."""
     if not isinstance(row, Mapping) or row.get("id") != article_id or not isinstance(row.get("content"), str):
@@ -234,10 +258,19 @@ def validate_post_update(article_id: int, row: Mapping[str, Any], plan: Mapping[
 class LegacyBackfillRunner:
     """Sequence 18→19→21→23→24→27 and stop permanently on first failure."""
 
-    def __init__(self, read_transport: ReadTransport, edit_transport: EditTransport, plans: Mapping[int, Mapping[str, Any]]) -> None:
+    def __init__(
+        self,
+        read_transport: ReadTransport,
+        edit_transport: EditTransport,
+        plans: Mapping[int, Mapping[str, Any]],
+        execution_order: Sequence[int] = BACKFILL_ORDER,
+    ) -> None:
         if getattr(read_transport, "role", None) != "read" or getattr(edit_transport, "role", None) != "edit" or read_transport is edit_transport:
             raise BackfillSafetyError("Read/Edit transport roles must be separated")
-        self._read, self._edit, self._plans = read_transport, edit_transport, dict(plans)
+        order = tuple(execution_order)
+        if not order or len(set(order)) != len(order) or set(order) != set(plans):
+            raise BackfillSafetyError("execution_order_invalid")
+        self._read, self._edit, self._plans, self._execution_order = read_transport, edit_transport, dict(plans), order
         self._sent: set[int] = set()
         self._execution_audit: list[UpdateAuditRecord] = []
         self._non_target_audit: list[NonTargetStateAudit] = []
@@ -299,7 +332,7 @@ class LegacyBackfillRunner:
 
     def _verify_remaining_target_articles(self) -> None:
         """Fail closed if a not-yet-sent approved target was altered in parallel."""
-        for other_article_id in BACKFILL_ORDER:
+        for other_article_id in self._execution_order:
             if other_article_id in self._sent:
                 continue
             plan = self._plans.get(other_article_id)
@@ -312,7 +345,7 @@ class LegacyBackfillRunner:
 
     def run(self, expected_baseline: Mapping[str, int]) -> list[ArticleResult]:
         output: list[ArticleResult] = []
-        for article_id in BACKFILL_ORDER:
+        for article_id in self._execution_order:
             if article_id in self._sent:
                 raise BackfillSafetyError("duplicate_update_attempt")
             plan = self._plans.get(article_id)
@@ -393,6 +426,30 @@ def run_backfill_session(
         except BackfillSafetyError as error:
             # A later safety stop must not erase previously verified update
             # metadata.  These records contain only the safe fields above.
+            error.execution_audit = runner.execution_audit
+            error.non_target_audit = runner.non_target_audit
+            raise
+
+
+def run_resume_backfill_session(
+    tokens: InMemoryTokenPair,
+    read_factory: ReadTransportFactory,
+    edit_factory: ResumeEditTransportFactory,
+    plans: Mapping[int, Mapping[str, Any]],
+    expected_baseline: Mapping[str, int],
+) -> list[ArticleResult]:
+    """Run only the fixed five-ID resume queue; no fallback to six-ID mode."""
+    if tuple(plans) != RESUME_TARGET_ORDER or set(plans) != set(RESUME_TARGET_ORDER):
+        raise BackfillSafetyError("resume_plan_set_rejected")
+    with tokens:
+        if getattr(read_factory, "role", None) != "read" or getattr(edit_factory, "role", None) != "edit" or read_factory is edit_factory:
+            raise BackfillSafetyError("Read/Edit transport factory roles must be separated")
+        read_transport = read_factory.create_read_transport(tokens.read_token())
+        edit_transport = edit_factory.create_resume_edit_transport(tokens.edit_token())
+        runner = LegacyBackfillRunner(read_transport, edit_transport, plans, RESUME_TARGET_ORDER)
+        try:
+            return run_with_in_memory_tokens(tokens, runner, expected_baseline)
+        except BackfillSafetyError as error:
             error.execution_audit = runner.execution_audit
             error.non_target_audit = runner.non_target_audit
             raise

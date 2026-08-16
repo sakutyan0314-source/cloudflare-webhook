@@ -22,7 +22,7 @@ from d1_read_only_session import (
     authorization_header,
     validate_read_only_result_sets,
 )
-from v1_9_1_legacy_backfill_runner import BackfillSafetyError, OutcomeUnknownError
+from v1_9_1_legacy_backfill_runner import BackfillSafetyError, OutcomeUnknownError, RESUME_TARGET_ORDER
 
 
 ARTICLE_SELECT = """SELECT id, content, seo_status, category, title, description,
@@ -205,13 +205,19 @@ class LegacyEditD1Transport:
 
     role = "edit"
 
-    def __init__(self, client: EditClient) -> None:
+    def __init__(self, client: EditClient, allowed_article_ids: frozenset[int] | None = None) -> None:
         self._client = client
+        self._allowed_article_ids = allowed_article_ids
 
     def conditional_update(self, plan: Mapping[str, Any], content: str) -> Mapping[str, Any]:
         expected, target = plan.get("expected"), plan.get("target")
         if not isinstance(expected, Mapping) or not isinstance(target, Mapping) or not isinstance(content, str):
             raise BackfillSafetyError("conditional_update_plan_invalid")
+        article_id = expected.get("id")
+        if not isinstance(article_id, int):
+            raise BackfillSafetyError("conditional_update_article_id_invalid")
+        if self._allowed_article_ids is not None and article_id not in self._allowed_article_ids:
+            raise BackfillSafetyError("resume_update_article_id_rejected")
         required = ("title", "description", "category", "published_at", "updated_at", "seo_status")
         if any(field not in target for field in required):
             raise BackfillSafetyError("conditional_update_target_invalid")
@@ -238,3 +244,12 @@ class EditD1TransportFactory:
 
     def create_edit_transport(self, token: str) -> LegacyEditD1Transport:
         return LegacyEditD1Transport(self._client_factory(self._target, token))
+
+
+class ResumeEditD1TransportFactory(EditD1TransportFactory):
+    """Defense-in-depth edit factory for the approved five-article resume queue."""
+
+    def create_resume_edit_transport(self, token: str) -> LegacyEditD1Transport:
+        return LegacyEditD1Transport(
+            self._client_factory(self._target, token), frozenset(RESUME_TARGET_ORDER)
+        )
