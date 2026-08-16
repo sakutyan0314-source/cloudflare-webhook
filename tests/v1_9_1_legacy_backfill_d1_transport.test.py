@@ -73,9 +73,9 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
         results,read,edit,cleared,received=self.execute_session()
         self.assertEqual(list(ORDER),[result.article_id for result in results]); self.assertEqual(list(ORDER),[call[0] for call in edit.calls]); self.assertTrue(all(result.rows_written_reference==0 for result in results)); self.assertEqual([True],cleared)
         self.assertEqual(['read_dummy'],received['read']); self.assertEqual(['edit_dummy'],received['edit'])
-        for article_id in ORDER:
+        for index, article_id in enumerate(ORDER):
             article_reads=[call for call in read.calls if call[0]=='select' and call[1]==module.ARTICLE_SELECT and call[2]==(article_id,)]
-            self.assertEqual(2,len(article_reads))
+            self.assertEqual(2 + index,len(article_reads))
     def test_read_identity_or_precondition_failure_sends_no_update(self):
         plans,read,edit,read_factory,edit_factory,_received=self.setup(fail_pre=18); tokens=runner.InMemoryTokenPair('read','edit',lambda:None)
         with self.assertRaisesRegex(runner.BackfillSafetyError,'stale_category'): runner.run_backfill_session(tokens,read_factory,edit_factory,plans,BASELINE)
@@ -100,6 +100,18 @@ class TestLegacyBackfillD1Transport(unittest.TestCase):
         response=transport.conditional_update(plans[18],content(18)); self.assertTrue(response['success'])
         self.assertIn('WHERE id=? AND seo_status=?',edit.calls[0][1]); self.assertIn('RETURNING id',edit.calls[0][1]); self.assertNotIn(';',edit.calls[0][1])
         with self.assertRaises(runner.BackfillSafetyError): runner.run_backfill_session(runner.InMemoryTokenPair('read','edit',lambda:None),ef,rf,plans,BASELINE)
+
+    def test_edit_transport_attaches_only_safe_http_status_to_verified_result(self):
+        class HttpResponse:
+            status=200
+            headers={'Content-Type':'application/json'}
+            def read(self): return b'{"success":true,"result":[{"success":true,"meta":{"changed_db":true,"changes":1,"rows_written":0},"results":[{"id":18}]}]}'
+            def close(self): pass
+        target=module.LegacyD1Target('account','db','prod')
+        client=module.D1ConditionalEditClient(target,'edit',opener=lambda *_args,**_kwargs:HttpResponse())
+        response=client.query('UPDATE curation_logs SET title=? RETURNING id',['safe'])
+        self.assertEqual(200,response['_safe_http_status'])
+        self.assertNotIn('Authorization',repr(response)); self.assertNotIn('edit',repr(response))
 
     def test_actual_preflight_select_payload_has_only_fixed_selects_and_matching_params(self):
         article,_=read_session.build_fixed_select_request(({'sql':module.ARTICLE_SELECT,'params':[18]},))

@@ -193,7 +193,11 @@ class D1ConditionalEditClient:
             raise OutcomeUnknownError("d1_edit_response_unparseable") from None
         if status < 200 or status >= 300 or not isinstance(payload, Mapping) or payload.get("success") is not True:
             raise LegacyD1TransportError("d1_edit_response_rejected")
-        return payload
+        # Preserve only the HTTP success status as safe execution metadata.
+        # The raw response remains local to this method and is never audited.
+        safe_payload = dict(payload)
+        safe_payload["_safe_http_status"] = status
+        return safe_payload
 
 
 class LegacyEditD1Transport:

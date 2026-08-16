@@ -64,24 +64,60 @@ class LegacyRunnerTest(unittest.TestCase):
         with self.assertRaises(runner_module.BackfillSafetyError): runner_module.InMemoryTokenPair('same','same')
     def test_sequential_read_edit_read_completes_in_fixed_order(self):
         read,edit,runner,baseline=self.setup_runner(); results=runner.run(baseline)
-        self.assertEqual(list(runner_module.BACKFILL_ORDER),[item.article_id for item in results]); self.assertEqual(list(runner_module.BACKFILL_ORDER),[item[1] for item in edit.calls]); self.assertTrue(all(item.changes==1 and item.returned_id==item.article_id for item in results)); self.assertEqual(12,len([item for item in read.calls if item[0]=='read']))
+        self.assertEqual(list(runner_module.BACKFILL_ORDER),[item.article_id for item in results]); self.assertEqual(list(runner_module.BACKFILL_ORDER),[item[1] for item in edit.calls]); self.assertTrue(all(item.changes==1 and item.returned_id==item.article_id for item in results)); self.assertEqual(27,len([item for item in read.calls if item[0]=='read']))
     def test_stale_stops_before_first_edit_and_remaining_articles(self):
         read,edit,runner,baseline=self.setup_runner(); read.rows[19]['category']='changed'
-        with self.assertRaisesRegex(runner_module.BackfillSafetyError,'stale_category'): runner.run(baseline)
+        with self.assertRaisesRegex(runner_module.BackfillSafetyError,'remaining_target_state_changed'): runner.run(baseline)
         self.assertEqual([('edit',18)],edit.calls)
     def test_outcome_unknown_never_retries_or_continues(self):
         read,edit,runner,baseline=self.setup_runner('unknown')
         with self.assertRaises(runner_module.OutcomeUnknownError): runner.run(baseline)
         self.assertEqual([('edit',18)],edit.calls)
-    def test_bad_update_response_and_post_state_or_baseline_failure_stop(self):
+    def test_bad_update_response_and_post_state_failure_stop(self):
         read,edit,runner,baseline=self.setup_runner('bad_response')
         with self.assertRaisesRegex(runner_module.BackfillSafetyError,'update_result_invalid'): runner.run(baseline)
         self.assertEqual([('edit',18)],edit.calls)
+    def test_monotonic_counter_increases_continue_and_are_audited(self):
         read,edit,runner,baseline=self.setup_runner(); original=read.baseline
-        def changed(): return dict(original(),sending=1)
-        read.baseline=changed
-        with self.assertRaisesRegex(runner_module.BackfillSafetyError,'non_target_state_changed'): runner.run(baseline)
+        def increased(): return dict(original(),pipeline_completed_sent=7,sync_runs=5,page_daily_metrics=4,affiliate_click_events=4)
+        read.baseline=increased
+        results=runner.run(baseline)
+        self.assertEqual(6,len(results)); audit=runner.non_target_audit[0].counters
+        for key in ('pipeline_completed_sent','sync_runs','page_daily_metrics','affiliate_click_events'):
+            self.assertEqual('monotonic_increase_observed',audit[key]['classification'])
+
+    def test_decrease_and_safety_critical_state_stop_after_verified_update(self):
+        for changed, code in (({'pipeline_completed_sent':5},'unexpected_decrease'),({'sending':1},'safety_critical_change'),({'reconciliation_events':1},'safety_critical_change')):
+            read,edit,runner,baseline=self.setup_runner(); original=read.baseline
+            read.baseline=lambda changed=changed: dict(original(),**changed)
+            with self.assertRaisesRegex(runner_module.BackfillSafetyError,code): runner.run(baseline)
+            self.assertEqual([('edit',18)],edit.calls)
+            record=runner.execution_audit[-1]
+            self.assertIn('update_result_verified',record.states)
+            self.assertTrue(record.changed_db); self.assertEqual(1,record.changes); self.assertEqual(18,record.returned_id)
+
+    def test_parallel_change_to_a_remaining_target_stops_after_verified_update(self):
+        read,edit,runner,baseline=self.setup_runner(); original=read.foreign_key_check
+        def changed_remaining_target():
+            read.rows[19]['category']='changed'
+            return original()
+        read.foreign_key_check=changed_remaining_target
+        with self.assertRaisesRegex(runner_module.BackfillSafetyError,'remaining_target_state_changed'): runner.run(baseline)
         self.assertEqual([('edit',18)],edit.calls)
+        self.assertIn('post_read_verified',runner.execution_audit[-1].states)
+
+    def test_verified_update_audit_survives_later_stop_without_sensitive_data(self):
+        read,edit,_runner,baseline=self.setup_runner(); original=read.baseline
+        read.baseline=lambda: dict(original(),sending=1)
+        pair=runner_module.InMemoryTokenPair('read_token','edit_token',lambda:None)
+        with self.assertRaises(runner_module.BackfillSafetyError) as caught:
+            runner_module.run_backfill_session(pair,ReadFactory(read),EditFactory(edit),read.plans,baseline)
+        records=caught.exception.execution_audit
+        self.assertTrue(records); record=records[-1]
+        self.assertIn('post_read_verified',record.states); self.assertTrue(record.changed_db)
+        self.assertEqual(1,record.changes); self.assertEqual(18,record.returned_id); self.assertEqual(3,record.rows_written_reference)
+        self.assertIsNotNone(record.confirmed_at)
+        self.assertNotIn('本文',repr(records)); self.assertNotIn('read_token',repr(records)); self.assertNotIn('edit_token',repr(records))
     def test_duplicate_and_role_confusion_are_rejected(self):
         read,edit,runner,baseline=self.setup_runner(); runner._sent.add(18)
         with self.assertRaisesRegex(runner_module.BackfillSafetyError,'duplicate_update_attempt'): runner.run(baseline)

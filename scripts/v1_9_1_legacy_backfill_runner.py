@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 import getpass
 import json
@@ -59,6 +60,36 @@ class ArticleResult:
     changes: int
     rows_written_reference: int | None
     returned_id: int
+
+
+@dataclass(frozen=True)
+class UpdateAuditRecord:
+    """Safe, append-only execution metadata; never contains content or secrets."""
+
+    article_id: int
+    states: tuple[str, ...]
+    http_status: int | None
+    changed_db: bool | None
+    changes: int | None
+    returned_id: int | None
+    rows_written_reference: int | None
+    result_classification: str | None
+    confirmed_at: str | None
+
+
+@dataclass(frozen=True)
+class NonTargetStateAudit:
+    """Safe counter-only verification after a completed target-article update."""
+
+    counters: Mapping[str, Mapping[str, int | str]]
+
+
+_MONOTONIC_COUNTERS = frozenset({
+    "pipeline_completed_sent", "sync_runs", "page_daily_metrics",
+    "query_page_daily_metrics", "affiliate_click_events",
+})
+_SAFETY_CRITICAL_COUNTERS = frozenset({"sending", "reconciliation_events"})
+_BASELINE_KEYS = _MONOTONIC_COUNTERS | _SAFETY_CRITICAL_COUNTERS
 
 
 class ReadTransport(Protocol):
@@ -208,6 +239,76 @@ class LegacyBackfillRunner:
             raise BackfillSafetyError("Read/Edit transport roles must be separated")
         self._read, self._edit, self._plans = read_transport, edit_transport, dict(plans)
         self._sent: set[int] = set()
+        self._execution_audit: list[UpdateAuditRecord] = []
+        self._non_target_audit: list[NonTargetStateAudit] = []
+
+    @property
+    def execution_audit(self) -> tuple[UpdateAuditRecord, ...]:
+        return tuple(self._execution_audit)
+
+    @property
+    def non_target_audit(self) -> tuple[NonTargetStateAudit, ...]:
+        return tuple(self._non_target_audit)
+
+    def _append_state(
+        self,
+        article_id: int,
+        states: tuple[str, ...],
+        audit: ConditionalUpdateAudit | None = None,
+        http_status: int | None = None,
+    ) -> None:
+        self._execution_audit.append(UpdateAuditRecord(
+            article_id=article_id,
+            states=states,
+            http_status=http_status,
+            changed_db=None if audit is None else audit.changed_db,
+            changes=None if audit is None else audit.changes,
+            returned_id=None if audit is None else audit.returned_id,
+            rows_written_reference=None if audit is None else audit.rows_written,
+            result_classification=None if audit is None else "update_result_verified",
+            confirmed_at=None if audit is None else datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        ))
+
+    def _verify_non_target_state(self, expected: Mapping[str, int]) -> None:
+        current = dict(self._read.baseline())
+        if set(expected) != _BASELINE_KEYS or set(current) != _BASELINE_KEYS:
+            raise BackfillSafetyError("baseline_shape_invalid")
+        counters: dict[str, dict[str, int | str]] = {}
+        for key in sorted(_BASELINE_KEYS):
+            baseline, value = expected[key], current[key]
+            if not isinstance(baseline, int) or isinstance(baseline, bool) or baseline < 0:
+                raise BackfillSafetyError("baseline_value_invalid")
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise BackfillSafetyError("current_baseline_invalid")
+            delta = value - baseline
+            if key in _SAFETY_CRITICAL_COUNTERS:
+                # Both represent no-active/no-reconciliation-error states.  Any
+                # non-zero value is unsafe even if a prior baseline was corrupt.
+                classification = "unchanged" if value == 0 else "safety_critical_change"
+                counters[key] = {"baseline": baseline, "current": value, "delta": delta, "classification": classification}
+                if value != 0:
+                    self._non_target_audit.append(NonTargetStateAudit(counters))
+                    raise BackfillSafetyError("safety_critical_change")
+            else:
+                classification = "unchanged" if delta == 0 else ("monotonic_increase_observed" if delta > 0 else "unexpected_decrease")
+                counters[key] = {"baseline": baseline, "current": value, "delta": delta, "classification": classification}
+                if delta < 0:
+                    self._non_target_audit.append(NonTargetStateAudit(counters))
+                    raise BackfillSafetyError("unexpected_decrease")
+        self._non_target_audit.append(NonTargetStateAudit(counters))
+
+    def _verify_remaining_target_articles(self) -> None:
+        """Fail closed if a not-yet-sent approved target was altered in parallel."""
+        for other_article_id in BACKFILL_ORDER:
+            if other_article_id in self._sent:
+                continue
+            plan = self._plans.get(other_article_id)
+            if not isinstance(plan, Mapping):
+                raise BackfillSafetyError("missing_article_plan")
+            try:
+                validate_pre_update(other_article_id, self._read.read_article(other_article_id), plan)
+            except BackfillSafetyError as error:
+                raise BackfillSafetyError("remaining_target_state_changed") from error
 
     def run(self, expected_baseline: Mapping[str, int]) -> list[ArticleResult]:
         output: list[ArticleResult] = []
@@ -219,7 +320,11 @@ class LegacyBackfillRunner:
                 raise BackfillSafetyError("missing_article_plan")
             current = self._read.read_article(article_id)
             content = validate_pre_update(article_id, current, plan)
+            states = ("preflight_verified",)
+            self._append_state(article_id, states)
             self._sent.add(article_id)  # reserve before transport; no retry after any ambiguous result
+            states += ("send_started",)
+            self._append_state(article_id, states)
             try:
                 response = self._edit.conditional_update(plan, content)
             except OutcomeUnknownError:
@@ -230,12 +335,21 @@ class LegacyBackfillRunner:
                 audit: ConditionalUpdateAudit = validate_exact_conditional_update(response, article_id)
             except Exception as error:
                 raise BackfillSafetyError("update_result_invalid") from error
+            status = response.get("_safe_http_status") if isinstance(response, Mapping) else None
+            if status is not None and (not isinstance(status, int) or isinstance(status, bool) or not 200 <= status < 300):
+                raise BackfillSafetyError("update_http_status_invalid")
+            states += ("update_result_verified",)
+            self._append_state(article_id, states, audit, status)
             after = self._read.read_article(article_id)
             validate_post_update(article_id, after, plan, plan["expected"]["content_sha256"])
+            states += ("post_read_verified",)
+            self._append_state(article_id, states, audit, status)
             if self._read.foreign_key_check() != 0:
                 raise BackfillSafetyError("foreign_key_check_failed")
-            if dict(self._read.baseline()) != dict(expected_baseline):
-                raise BackfillSafetyError("non_target_state_changed")
+            self._verify_remaining_target_articles()
+            self._verify_non_target_state(expected_baseline)
+            states += ("non_target_state_verified", "article_completed")
+            self._append_state(article_id, states, audit, status)
             output.append(ArticleResult(article_id, audit.changed_db, audit.changes, audit.rows_written, audit.returned_id))
         return output
 
@@ -274,4 +388,11 @@ def run_backfill_session(
         read_transport = read_factory.create_read_transport(tokens.read_token())
         edit_transport = edit_factory.create_edit_transport(tokens.edit_token())
         runner = LegacyBackfillRunner(read_transport, edit_transport, plans)
-        return run_with_in_memory_tokens(tokens, runner, expected_baseline)
+        try:
+            return run_with_in_memory_tokens(tokens, runner, expected_baseline)
+        except BackfillSafetyError as error:
+            # A later safety stop must not erase previously verified update
+            # metadata.  These records contain only the safe fields above.
+            error.execution_audit = runner.execution_audit
+            error.non_target_audit = runner.non_target_audit
+            raise
