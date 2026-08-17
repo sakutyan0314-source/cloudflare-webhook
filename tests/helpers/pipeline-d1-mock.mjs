@@ -8,6 +8,9 @@ export class PipelineD1Mock {
     this.state = {
       pipelineRuns: [],
       articles: [],
+      qualityGateAudits: [],
+      qualityGateChecks: [],
+      qualityGateReasons: [],
       nextRunId: 1,
       nextArticleId: 1,
       batchCalls: 0
@@ -24,8 +27,8 @@ export class PipelineD1Mock {
     try {
       const results = [];
       for (const statement of statements) results.push(await statement.run());
-      if (this.options.afterBatch) await this.options.afterBatch();
-      if (this.options.ambiguousBatchCommit) throw new Error("ambiguous after commit");
+      if (this.options.afterBatch && statements.some((statement) => statement.sql.startsWith("INSERT INTO curation_logs"))) await this.options.afterBatch();
+      if (this.options.ambiguousBatchCommit && statements.some((statement) => statement.sql.startsWith("INSERT INTO curation_logs"))) throw new Error("ambiguous after commit");
       return results;
     } catch (error) {
       if (!this.options.ambiguousBatchCommit) this.state = before;
@@ -201,6 +204,21 @@ class StatementMock {
         seo_status: seoStatus
       });
       return { meta: { changes: 1, last_row_id: article.id } };
+    }
+
+    if (this.sql.startsWith("INSERT INTO quality_gate_audits")) {
+      if (options.failQualityGateAudit || state.qualityGateAudits.some((audit) => audit.audit_id === this.args[0] || (audit.pipeline_run_id === this.args[1] && audit.stage === this.args[3]))) throw new Error("quality audit insert failed");
+      state.qualityGateAudits.push({ audit_id: this.args[0], pipeline_run_id: this.args[1], schema_version: this.args[2], stage: this.args[3], classification: this.args[4], threshold_version: this.args[5], evaluated_at: this.args[6] });
+      return { meta: { changes: 1 } };
+    }
+    if (this.sql.startsWith("INSERT INTO quality_gate_audit_checks")) {
+      if (options.failQualityGateAuditChecks) throw new Error("quality check insert failed");
+      state.qualityGateChecks.push({ audit_id: this.args[0], check_name: this.args[1], status: this.args[2] });
+      return { meta: { changes: 1 } };
+    }
+    if (this.sql.startsWith("INSERT INTO quality_gate_audit_reasons")) {
+      state.qualityGateReasons.push({ audit_id: this.args[0], reason_code: this.args[1], reason_order: this.args[2] });
+      return { meta: { changes: 1 } };
     }
 
     const runId = this.args.at(-1);

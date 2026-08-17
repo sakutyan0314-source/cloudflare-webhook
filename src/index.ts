@@ -275,6 +275,12 @@ const AFFILIATE_PLACEMENTS = new Set(["article", "discord"]);
 const AFFILIATE_LINK_TYPE = "amazon_search";
 const MIN_SEO_ARTICLE_BODY_LENGTH = 240;
 const RECENT_ARTICLE_SIMILARITY_THRESHOLD = 0.8;
+const QUALITY_GATE_AUDIT_SCHEMA_VERSION = "quality-gate-audit-v1";
+const SEO_QUALITY_THRESHOLD_VERSION = "seo_quality_threshold_v1";
+const QUALITY_GATE_CHECK_NAMES = new Set(["h1_structure", "title_presence", "body_presence", "body_length", "h2_count", "description_presence", "category_allowed", "duplicate_similarity"]);
+const QUALITY_GATE_CHECK_STATUSES = new Set(["pass", "fail", "not_evaluated", "review_required"]);
+const QUALITY_GATE_CLASSIFICATIONS = new Set(["pass", "fail", "needs_review", "input_invalid"]);
+const QUALITY_GATE_REASON_CODES = new Set(["h1_missing_or_invalid", "title_missing", "body_missing", "description_missing", "category_not_allowed", "body_length_below_minimum", "insufficient_h2_count", "seo_quality_check_failed", "duplicate_risk_exceeded"]);
 
 function seoText(value) {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
@@ -379,13 +385,112 @@ function parseGeneratedSeoArticle(markdown, nowIso) {
   };
 }
 
-async function prepareSeoArticleForSave(db, markdown, runtime = {}) {
+function qualityGateCheck(status, extra = {}) {
+  return { status, ...extra };
+}
+
+/* This function deliberately returns only numeric/category audit data.  It
+ * never places generated prose in the audit object. */
+function evaluateSeoQuality(markdown, runId, nowIso) {
+  const text = typeof markdown === "string" ? markdown : "";
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const firstContentIndex = lines.findIndex((line) => line.trim() !== "");
+  const titleMatch = firstContentIndex >= 0 ? lines[firstContentIndex].trim().match(/^#\s+(.+)$/) : null;
+  const title = titleMatch?.[1]?.trim() || "";
+  const bodyMarkdown = firstContentIndex >= 0 ? lines.filter((_, index) => index !== firstContentIndex).join("\n").trim() : "";
+  const description = legacyArticleDescription(bodyMarkdown);
+  const category = determineArticleCategory(`${title}\n${bodyMarkdown}`);
+  const h2Count = (bodyMarkdown.match(/^##\s+\S/gm) || []).length;
+  const reasonCodes = [];
+  const checks = {
+    h1_structure: qualityGateCheck(titleMatch ? "pass" : "fail"),
+    title_presence: qualityGateCheck(title ? "pass" : "fail"),
+    body_presence: qualityGateCheck(bodyMarkdown ? "pass" : "fail"),
+    body_length: qualityGateCheck(bodyMarkdown.length >= MIN_SEO_ARTICLE_BODY_LENGTH ? "pass" : "fail", { observed_value: bodyMarkdown.length, required_min: MIN_SEO_ARTICLE_BODY_LENGTH }),
+    h2_count: qualityGateCheck(h2Count >= 1 ? "pass" : "fail", { observed_value: h2Count, required_min: 1 }),
+    description_presence: qualityGateCheck(description ? "pass" : "fail"),
+    category_allowed: qualityGateCheck(SEO_CATEGORIES.has(category) ? "pass" : "fail"),
+    duplicate_similarity: qualityGateCheck("not_evaluated", { observed_value: null, threshold: RECENT_ARTICLE_SIMILARITY_THRESHOLD, compared_article_count: 0 })
+  };
+  if (!titleMatch) reasonCodes.push("h1_missing_or_invalid");
+  if (!title) reasonCodes.push("title_missing");
+  if (!bodyMarkdown) reasonCodes.push("body_missing");
+  if (!description) reasonCodes.push("description_missing");
+  if (!SEO_CATEGORIES.has(category)) reasonCodes.push("category_not_allowed");
+  if (bodyMarkdown.length < MIN_SEO_ARTICLE_BODY_LENGTH) reasonCodes.push("body_length_below_minimum");
+  if (h2Count < 1) reasonCodes.push("insufficient_h2_count");
+  const classification = reasonCodes.length ? "fail" : "pass";
+  return {
+    article: classification === "pass" ? {
+      content: text.trim(), title, description, bodyMarkdown, category,
+      publishedAt: nowIso, updatedAt: nowIso, seoStatus: "ready"
+    } : null,
+    audit: {
+      schema_version: QUALITY_GATE_AUDIT_SCHEMA_VERSION, run_id: runId, stage: "seo_quality",
+      classification, reason_codes: reasonCodes, threshold_version: SEO_QUALITY_THRESHOLD_VERSION,
+      evaluated_at: nowIso, checks
+    }
+  };
+}
+
+function finalizeDuplicateQualityAudit(evaluation, recentArticles) {
+  if (evaluation.audit.classification !== "pass" || !evaluation.article) return evaluation;
+  const similarities = recentArticles.map((row) => titleSimilarity(evaluation.article.title, readSeoArticle(row).title));
+  const highest = similarities.length ? Math.max(...similarities) : 0;
+  const reviewRequired = highest >= RECENT_ARTICLE_SIMILARITY_THRESHOLD;
+  const audit = {
+    ...evaluation.audit,
+    classification: reviewRequired ? "needs_review" : "pass",
+    reason_codes: reviewRequired ? ["duplicate_risk_exceeded"] : [],
+    checks: { ...evaluation.audit.checks, duplicate_similarity: qualityGateCheck(reviewRequired ? "review_required" : "pass", {
+      observed_value: highest, threshold: RECENT_ARTICLE_SIMILARITY_THRESHOLD, compared_article_count: recentArticles.length
+    }) }
+  };
+  return { article: { ...evaluation.article, seoStatus: reviewRequired ? "needs_review" : "ready" }, audit };
+}
+
+function serializeQualityGateAudit(audit) {
+  if (!audit || typeof audit !== "object" || Object.keys(audit).length !== 8 ||
+      audit.schema_version !== QUALITY_GATE_AUDIT_SCHEMA_VERSION || audit.stage !== "seo_quality" ||
+      !QUALITY_GATE_CLASSIFICATIONS.has(audit.classification) || audit.threshold_version !== SEO_QUALITY_THRESHOLD_VERSION ||
+      typeof audit.run_id !== "number" || !Number.isSafeInteger(audit.run_id) || audit.run_id < 1 ||
+      typeof audit.evaluated_at !== "string" || !Array.isArray(audit.reason_codes) || !audit.checks || typeof audit.checks !== "object") {
+    throw new OperationError({ stage: "seo_quality", provider: "audit", errorCode: "quality_gate_audit_write_failed" });
+  }
+  const checkNames = Object.keys(audit.checks);
+  if (checkNames.length !== 8 || checkNames.some((name) => !QUALITY_GATE_CHECK_NAMES.has(name)) ||
+      audit.reason_codes.some((code) => !QUALITY_GATE_REASON_CODES.has(code)) || new Set(audit.reason_codes).size !== audit.reason_codes.length) {
+    throw new OperationError({ stage: "seo_quality", provider: "audit", errorCode: "quality_gate_audit_write_failed" });
+  }
+  const checks = checkNames.sort().map((checkName) => {
+    const check = audit.checks[checkName];
+    const allowed = new Set(["status", "observed_value", "required_min", "required_max", "threshold", "compared_article_count"]);
+    if (!check || typeof check !== "object" || Object.keys(check).some((key) => !allowed.has(key)) || !QUALITY_GATE_CHECK_STATUSES.has(check.status)) throw new OperationError({ stage: "seo_quality", provider: "audit", errorCode: "quality_gate_audit_write_failed" });
+    for (const key of ["observed_value", "required_min", "required_max", "threshold", "compared_article_count"]) if (check[key] != null && (!Number.isFinite(check[key]) || check[key] < 0)) throw new OperationError({ stage: "seo_quality", provider: "audit", errorCode: "quality_gate_audit_write_failed" });
+    return { check_name: checkName, status: check.status, observed_value: check.observed_value ?? null, required_min: check.required_min ?? null, required_max: check.required_max ?? null, threshold: check.threshold ?? null, compared_article_count: check.compared_article_count ?? null };
+  });
+  return { audit_id: crypto.randomUUID(), pipeline_run_id: audit.run_id, schema_version: audit.schema_version, stage: audit.stage, classification: audit.classification, threshold_version: audit.threshold_version, evaluated_at: audit.evaluated_at, checks, reasons: audit.reason_codes.map((reason_code, reason_order) => ({ reason_code, reason_order })) };
+}
+
+async function persistQualityGateAudit(db, runtime, audit) {
+  try {
+    const record = serializeQualityGateAudit(audit);
+    const statements = [db.prepare(`INSERT INTO quality_gate_audits (audit_id, pipeline_run_id, schema_version, stage, classification, threshold_version, evaluated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(record.audit_id, record.pipeline_run_id, record.schema_version, record.stage, record.classification, record.threshold_version, record.evaluated_at)];
+    for (const check of record.checks) statements.push(db.prepare(`INSERT INTO quality_gate_audit_checks (audit_id, check_name, status, observed_value, required_min, required_max, threshold, compared_article_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(record.audit_id, check.check_name, check.status, check.observed_value, check.required_min, check.required_max, check.threshold, check.compared_article_count));
+    for (const reason of record.reasons) statements.push(db.prepare(`INSERT INTO quality_gate_audit_reasons (audit_id, reason_code, reason_order) VALUES (?, ?, ?)`).bind(record.audit_id, reason.reason_code, reason.reason_order));
+    if (!db || typeof db.batch !== "function") throw new Error("audit batch unavailable");
+    const results = await db.batch(statements);
+    if (!Array.isArray(results) || results.length !== statements.length || results.some((result) => statementChanges(result) !== 1)) throw new Error("audit batch invalid");
+  } catch {
+    throw new OperationError({ stage: "seo_quality", provider: "audit", errorCode: "quality_gate_audit_write_failed" });
+  }
+}
+
+async function prepareSeoArticleForSave(db, markdown, runId, runtime = {}) {
   const nowIso = runtimeNow(runtime).toISOString();
-  const article = parseGeneratedSeoArticle(markdown, nowIso);
-  const invalid = !article ||
-    article.bodyMarkdown.length < MIN_SEO_ARTICLE_BODY_LENGTH ||
-    !/^##\s+\S/m.test(article.bodyMarkdown);
-  if (invalid) {
+  let evaluation = evaluateSeoQuality(markdown, runId, nowIso);
+  if (evaluation.audit.classification === "fail") {
+    await persistQualityGateAudit(db, runtime, evaluation.audit);
     throw new OperationError({ stage: "seo_quality", provider: "worker", errorCode: "seo_quality_failed" });
   }
 
@@ -396,13 +501,13 @@ async function prepareSeoArticleForSave(db, markdown, runtime = {}) {
     ).all();
     recentArticles = result?.results ?? [];
   } catch {
+    const audit = { ...evaluation.audit, classification: "input_invalid", reason_codes: ["seo_quality_check_failed"], checks: { ...evaluation.audit.checks, duplicate_similarity: qualityGateCheck("not_evaluated", { observed_value: null, threshold: RECENT_ARTICLE_SIMILARITY_THRESHOLD, compared_article_count: 0 }) } };
+    await persistQualityGateAudit(db, runtime, audit);
     throw new OperationError({ stage: "seo_quality", provider: "d1", errorCode: "seo_quality_check_failed" });
   }
-  const isTooSimilar = recentArticles.some((row) => {
-    const existing = readSeoArticle(row);
-    return titleSimilarity(article.title, existing.title) >= RECENT_ARTICLE_SIMILARITY_THRESHOLD;
-  });
-  return { ...article, seoStatus: isTooSimilar ? "needs_review" : "ready" };
+  evaluation = finalizeDuplicateQualityAudit(evaluation, recentArticles);
+  await persistQualityGateAudit(db, runtime, evaluation.audit);
+  return evaluation.article;
 }
 
 function renderInlineMarkdown(value) {
@@ -1550,7 +1655,7 @@ async function runReliablePipeline(env, specification, runtime = {}) {
     const finalArticle = await callOpenAI(env.OPENAI_API_KEY, reviewed, pipelineRuntime);
     stage = "seo_quality";
     await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
-    const seoArticle = await prepareSeoArticleForSave(env.DB, finalArticle, pipelineRuntime);
+    const seoArticle = await prepareSeoArticleForSave(env.DB, finalArticle, run.id, pipelineRuntime);
     stage = "d1_save";
     await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
     const savedArticle = await saveArticleAndMarkSaved(env.DB, run, specification, seoArticle, pipelineRuntime);

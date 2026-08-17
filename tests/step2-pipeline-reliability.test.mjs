@@ -13,6 +13,8 @@ const exportedSource = `${source}\nexport {
   handleTestMultiLlm,
   handleExistingPipelineRun,
   normalizeScheduledTime,
+  evaluateSeoQuality,
+  finalizeDuplicateQualityAudit,
   runReliablePipeline,
   runScheduledPipeline,
   validateManualIdempotencyKey
@@ -25,6 +27,8 @@ const {
   handleTestMultiLlm,
   handleExistingPipelineRun,
   normalizeScheduledTime,
+  evaluateSeoQuality,
+  finalizeDuplicateQualityAudit,
   runReliablePipeline,
   runScheduledPipeline,
   validateManualIdempotencyKey
@@ -62,6 +66,7 @@ function successData(provider, finalArticle = "final article") {
 function createHarness(options = {}) {
   const db = options.db ?? new PipelineD1Mock(options.dbOptions);
   const calls = [];
+  const qualityGateAudits = [];
   let discordShouldFail = options.discordShouldFail ?? false;
   const runtime = {
     now: () => options.now ?? FIXED_DATE,
@@ -99,7 +104,7 @@ function createHarness(options = {}) {
     db,
     env,
     runtime,
-    calls,
+    calls, qualityGateAudits: db.state.qualityGateAudits,
     setDiscordFailure(value) { discordShouldFail = value; }
   };
 }
@@ -259,6 +264,9 @@ await test("quality gate saves a ready SEO article with separated fields", async
   assert.ok(article.published_at);
   assert.ok(article.updated_at);
   assert.notEqual(article.category, undefined);
+  assert.equal(harness.qualityGateAudits.length, 1);
+  assert.equal(harness.qualityGateAudits[0].classification, "pass");
+  assert.equal(harness.db.state.qualityGateChecks.length, 8);
 });
 
 await test("quality gate failure records a failed run without saving or notifying", async () => {
@@ -270,6 +278,7 @@ await test("quality gate failure records a failed run without saving or notifyin
   assert.equal(run.error_code, "seo_quality_failed");
   assert.equal(harness.db.state.articles.length, 0);
   assert.equal(harness.calls.some((url) => url.includes("discord")), false);
+  assert.deepEqual(harness.db.state.qualityGateReasons.map((reason) => reason.reason_code).sort(), ["body_length_below_minimum", "insufficient_h2_count"]);
 });
 
 await test("too-similar article is saved for review without Discord notification", async () => {
@@ -283,6 +292,26 @@ await test("too-similar article is saved for review without Discord notification
   assert.equal(article.seo_status, "needs_review");
   assert.equal(harness.db.state.pipelineRuns[0].status, "saved");
   assert.equal(harness.calls.some((url) => url.includes("discord")), false);
+  assert.equal(harness.qualityGateAudits[0].classification, "needs_review");
+  assert.deepEqual(harness.db.state.qualityGateReasons.map((reason) => reason.reason_code), ["duplicate_risk_exceeded"]);
+});
+
+await test("quality evaluation records structural failures without generated prose", async () => {
+  const evaluated = evaluateSeoQuality("not an H1", "safe-run", "2026-08-10T00:00:00.000Z");
+  assert.equal(evaluated.audit.classification, "fail");
+  assert.deepEqual(evaluated.audit.reason_codes.sort(), ["body_length_below_minimum", "body_missing", "description_missing", "h1_missing_or_invalid", "insufficient_h2_count", "title_missing"]);
+  const serialized = JSON.stringify(evaluated.audit);
+  assert.equal(serialized.includes("not an H1"), false);
+  assert.equal(serialized.includes("content"), false);
+  assert.equal(evaluated.audit.threshold_version, "seo_quality_threshold_v1");
+});
+
+await test("quality gate audit write failure is fail-closed before article save or Discord", async () => {
+  const harness = createHarness({ dbOptions: { failQualityGateAudit: true } });
+  await assert.rejects(runReliablePipeline(harness.env, manualSpecification("audit-fail"), harness.runtime));
+  assert.equal(harness.db.state.articles.length, 0);
+  assert.equal(harness.calls.some((url) => url.includes("discord")), false);
+  assert.equal(harness.db.state.pipelineRuns[0].error_code, "quality_gate_audit_write_failed");
 });
 
 await test("Cron and manual namespaces do not collide", async () => {
@@ -421,7 +450,7 @@ await test("same pipeline_run_id rejects a second article", async () => {
 await test("pipeline save uses D1 batch", async () => {
   const harness = createHarness();
   await runReliablePipeline(harness.env, manualSpecification("batch"), harness.runtime);
-  assert.equal(harness.db.state.batchCalls, 1);
+  assert.equal(harness.db.state.batchCalls, 2); // audit batch, then article/save-state batch
 });
 
 await test("notification sending state prevents concurrent duplicate sends", async () => {
