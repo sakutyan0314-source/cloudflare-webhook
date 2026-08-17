@@ -94,6 +94,25 @@ class NonTargetStateAudit:
     advanced_at: str | None
 
 
+@dataclass(frozen=True)
+class ResumeBackfillResultEnvelope:
+    """Safe result returned only after the full five-article resume succeeds."""
+
+    result_schema_version: str
+    resume_target: tuple[int, ...]
+    completed_article_ids: tuple[int, ...]
+    update_results: tuple[ArticleResult, ...]
+    update_audit_records: tuple[UpdateAuditRecord, ...]
+    baseline_audit_records: tuple[NonTargetStateAudit, ...]
+    final_operational_baseline: Mapping[str, int]
+    final_safety_critical_state: Mapping[str, int]
+    outcome_unknown_count: int
+    retry_count: int
+    rollback_count: int
+    execution_classification: str
+    completed_at: str
+
+
 _MONOTONIC_COUNTERS = frozenset({
     "pipeline_completed_sent", "sync_runs", "page_daily_metrics",
     "query_page_daily_metrics", "affiliate_click_events",
@@ -470,7 +489,7 @@ def run_resume_backfill_session(
     edit_factory: ResumeEditTransportFactory,
     plans: Mapping[int, Mapping[str, Any]],
     expected_baseline: Mapping[str, int],
-) -> list[ArticleResult]:
+) -> ResumeBackfillResultEnvelope:
     """Run only the fixed five-ID resume queue; no fallback to six-ID mode."""
     if tuple(plans) != RESUME_TARGET_ORDER or set(plans) != set(RESUME_TARGET_ORDER):
         raise BackfillSafetyError("resume_plan_set_rejected")
@@ -481,7 +500,37 @@ def run_resume_backfill_session(
         edit_transport = edit_factory.create_resume_edit_transport(tokens.edit_token())
         runner = LegacyBackfillRunner(read_transport, edit_transport, plans, RESUME_TARGET_ORDER)
         try:
-            return run_with_in_memory_tokens(tokens, runner, expected_baseline)
+            results = tuple(run_with_in_memory_tokens(tokens, runner, expected_baseline))
+            update_audit = runner.execution_audit
+            baseline_audit = runner.non_target_audit
+            if tuple(item.article_id for item in results) != RESUME_TARGET_ORDER:
+                raise BackfillSafetyError("resume_result_order_invalid")
+            if tuple(record.article_id for record in baseline_audit) != RESUME_TARGET_ORDER or not all(record.baseline_advanced for record in baseline_audit):
+                raise BackfillSafetyError("resume_baseline_audit_invalid")
+            completed_update_audit = tuple(
+                next(record for record in reversed(update_audit) if record.article_id == article_id and "article_completed" in record.states)
+                for article_id in RESUME_TARGET_ORDER
+            )
+            final = baseline_audit[-1].observed_current
+            return ResumeBackfillResultEnvelope(
+                result_schema_version="v1.9.1-resume-backfill-result-v1",
+                resume_target=RESUME_TARGET_ORDER,
+                completed_article_ids=RESUME_TARGET_ORDER,
+                update_results=results,
+                update_audit_records=completed_update_audit,
+                baseline_audit_records=baseline_audit,
+                final_operational_baseline={key: final[key] for key in sorted(_MONOTONIC_COUNTERS)},
+                final_safety_critical_state={
+                    "foreign_key_check": 0,
+                    "sending": final["sending"],
+                    "reconciliation_events": final["reconciliation_events"],
+                },
+                outcome_unknown_count=0,
+                retry_count=0,
+                rollback_count=0,
+                execution_classification="completed_successfully",
+                completed_at=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            )
         except BackfillSafetyError as error:
             error.execution_audit = runner.execution_audit
             error.non_target_audit = runner.non_target_audit

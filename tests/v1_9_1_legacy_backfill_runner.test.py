@@ -187,9 +187,46 @@ class LegacyRunnerTest(unittest.TestCase):
         read,edit,_runner,baseline=self.setup_runner(); plans={key:value for key,value in read.plans.items() if key in runner_module.RESUME_TARGET_ORDER}
         read.plans=plans
         pair=runner_module.InMemoryTokenPair('resume_read','resume_edit',lambda:None)
-        results=runner_module.run_resume_backfill_session(pair,ReadFactory(read),ResumeEditFactory(edit),plans,baseline)
-        self.assertEqual(list(runner_module.RESUME_TARGET_ORDER),[item.article_id for item in results])
+        envelope=runner_module.run_resume_backfill_session(pair,ReadFactory(read),ResumeEditFactory(edit),plans,baseline)
+        self.assertEqual('v1.9.1-resume-backfill-result-v1',envelope.result_schema_version)
+        self.assertEqual('completed_successfully',envelope.execution_classification)
+        self.assertEqual(runner_module.RESUME_TARGET_ORDER,envelope.completed_article_ids)
+        self.assertEqual(list(runner_module.RESUME_TARGET_ORDER),[item.article_id for item in envelope.update_results])
         self.assertEqual(list(runner_module.RESUME_TARGET_ORDER),[call[1] for call in edit.calls])
         self.assertNotIn(18,[call[1] for call in edit.calls])
+
+    def test_resume_success_envelope_returns_safe_ordered_audits_and_final_baseline(self):
+        read,edit,_runner,baseline=self.setup_runner()
+        plans={key:value for key,value in read.plans.items() if key in runner_module.RESUME_TARGET_ORDER}
+        read.plans=plans
+        snapshots=[
+            dict(baseline,pipeline_completed_sent=7),
+            dict(baseline,pipeline_completed_sent=7,sync_runs=5),
+            dict(baseline,pipeline_completed_sent=8,sync_runs=5,page_daily_metrics=4),
+            dict(baseline,pipeline_completed_sent=8,sync_runs=6,page_daily_metrics=4,affiliate_click_events=4),
+            dict(baseline,pipeline_completed_sent=9,sync_runs=6,page_daily_metrics=4,affiliate_click_events=4),
+        ]
+        read.baseline=lambda:dict(snapshots.pop(0))
+        envelope=runner_module.run_resume_backfill_session(runner_module.InMemoryTokenPair('safe_read','safe_edit',lambda:None),ReadFactory(read),ResumeEditFactory(edit),plans,baseline)
+        self.assertEqual(runner_module.RESUME_TARGET_ORDER,tuple(record.article_id for record in envelope.update_audit_records))
+        self.assertEqual(runner_module.RESUME_TARGET_ORDER,tuple(record.article_id for record in envelope.baseline_audit_records))
+        self.assertTrue(all(record.baseline_advanced for record in envelope.baseline_audit_records))
+        for prior,current in zip(envelope.baseline_audit_records,envelope.baseline_audit_records[1:]): self.assertEqual(prior.observed_current,current.previous_baseline)
+        self.assertEqual(envelope.baseline_audit_records[-1].observed_current['pipeline_completed_sent'],envelope.final_operational_baseline['pipeline_completed_sent'])
+        self.assertEqual({'foreign_key_check':0,'sending':0,'reconciliation_events':0},dict(envelope.final_safety_critical_state))
+        self.assertEqual((0,0,0),(envelope.outcome_unknown_count,envelope.retry_count,envelope.rollback_count))
+        serialized=repr(envelope)
+        for forbidden in ('safe_read','safe_edit','Authorization','content','body_markdown','Secret'):
+            self.assertNotIn(forbidden,serialized)
+
+    def test_resume_failure_never_returns_success_envelope_and_preserves_existing_audit(self):
+        read,edit,_runner,baseline=self.setup_runner('unknown')
+        plans={key:value for key,value in read.plans.items() if key in runner_module.RESUME_TARGET_ORDER}; read.plans=plans
+        with self.assertRaises(runner_module.OutcomeUnknownError) as caught:
+            runner_module.run_resume_backfill_session(runner_module.InMemoryTokenPair('read_x','edit_x',lambda:None),ReadFactory(read),ResumeEditFactory(edit),plans,baseline)
+        self.assertFalse(hasattr(caught.exception,'success_envelope'))
+        self.assertEqual(('preflight_verified','send_started'),caught.exception.execution_audit[-1].states)
+        self.assertIsNone(caught.exception.execution_audit[-1].confirmed_at)
+        self.assertEqual((),caught.exception.non_target_audit)
 
 if __name__=='__main__': unittest.main()
