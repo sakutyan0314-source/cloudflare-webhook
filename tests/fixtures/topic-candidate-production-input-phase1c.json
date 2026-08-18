@@ -1,0 +1,6 @@
+{
+  "handoff_created_at": "2026-08-18T00:03:00.000Z",
+  "production_input_created_at": "2026-08-18T00:04:00.000Z",
+  "quality_threshold_version": "seo_quality_threshold_v1",
+  "canary": {"candidate_key": "how", "decision": "approve_for_content_planning", "reason_codes": ["demand_evidence_sufficient", "content_gap_confirmed"]}
+}
