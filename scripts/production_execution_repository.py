@@ -95,6 +95,33 @@ class ProductionExecutionRepository:
             raise ProductionExecutionStateConflict("snapshot_event_atomicity_failed") from error
         return self.by_execution_id(production_execution_id) or self._impossible()
 
+    def link_pipeline_run(self, *, production_execution_id: str, pipeline_run_id: int, expected_state: str, expected_version: int) -> dict[str, Any]:
+        """Attach the existing pipeline state record without changing execution state."""
+        if not isinstance(pipeline_run_id, int) or pipeline_run_id < 1:
+            raise ProductionExecutionSafetyError("pipeline_run_link_invalid")
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE production_executions SET pipeline_run_id=? WHERE production_execution_id=? AND state=? AND state_version=? AND pipeline_run_id IS NULL",
+                (pipeline_run_id, production_execution_id, expected_state, expected_version),
+            )
+            if cursor.rowcount != 1: raise ProductionExecutionStateConflict("pipeline_run_link_conflict")
+        return self.by_execution_id(production_execution_id) or self._impossible()
+
+    def link_quality_gate_audit(self, *, production_execution_id: str, quality_gate_audit_id: str, expected_state: str, expected_version: int) -> dict[str, Any]:
+        """Attach only a PASS audit identity; no content or raw response is stored."""
+        if not isinstance(quality_gate_audit_id, str) or not quality_gate_audit_id:
+            raise ProductionExecutionSafetyError("quality_gate_link_invalid")
+        audit = _row(self.connection.execute("SELECT classification FROM quality_gate_audits WHERE audit_id=?", (quality_gate_audit_id,)))
+        if audit is None or audit["classification"] != "pass":
+            raise ProductionExecutionSafetyError("quality_gate_not_passed")
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE production_executions SET quality_gate_audit_id=? WHERE production_execution_id=? AND state=? AND state_version=? AND quality_gate_audit_id IS NULL",
+                (quality_gate_audit_id, production_execution_id, expected_state, expected_version),
+            )
+            if cursor.rowcount != 1: raise ProductionExecutionStateConflict("quality_gate_link_conflict")
+        return self.by_execution_id(production_execution_id) or self._impossible()
+
     def by_execution_id(self, production_execution_id: str) -> dict[str, Any] | None:
         return _row(self.connection.execute("SELECT * FROM production_executions WHERE production_execution_id = ?", (production_execution_id,)))
     def by_production_input_id(self, production_input_id: str) -> dict[str, Any] | None:
