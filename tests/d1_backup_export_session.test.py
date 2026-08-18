@@ -74,7 +74,7 @@ class D1BackupExportSessionTest(unittest.TestCase):
 
     def test_export_starts_once_then_polls_same_bookmark_until_complete(self):
         responses=[
-            Response({"success":True,"result":{"at_bookmark":"poll-bookmark"}}),
+            Response({"success":True,"result":{"at_bookmark":"poll-bookmark","status":"active"}}),
             Response({"success":True,"result":{"at_bookmark":"poll-bookmark"}}),
             Response({"success":True,"result":{"at_bookmark":"poll-bookmark","status":"complete","result":{"signed_url":"https://download.example/export.sql"}}}),
         ]

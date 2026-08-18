@@ -30,6 +30,7 @@ class D1BackupTransportError(RuntimeError):
 
 _ACCOUNT_ID = re.compile(r"^[a-f0-9]{32}$")
 _DATABASE_ID = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
+OFFICIAL_EXPORT_IN_PROGRESS_STATUS = "active"
 
 
 @dataclass(frozen=True)
@@ -220,9 +221,10 @@ class FixedIdentityD1BackupTransport:
 def parse_export_polling_response(response: D1BackupResponse) -> D1ExportInProgress | D1ExportComplete:
     """Accept only documented polling cursors or completed signed URLs.
 
-    Cloudflare documents ``status`` only for terminal ``complete`` and
-    ``error`` responses.  An otherwise-valid response with ``at_bookmark`` and
-    no terminal status remains in progress.  Unknown status values fail closed.
+    Cloudflare's official Wrangler type defines ``active`` as the in-progress
+    status.  The API reference marks ``status`` optional, so an otherwise-valid
+    response with ``at_bookmark`` and no status also remains in progress.
+    Unknown status values fail closed.
     """
     result = response.payload.get("result")
     if not isinstance(result, Mapping):
@@ -231,7 +233,7 @@ def parse_export_polling_response(response: D1BackupResponse) -> D1ExportInProgr
     if not isinstance(bookmark, str) or not bookmark:
         raise D1BackupSafetyError("export_polling_bookmark_invalid")
     status = result.get("status")
-    if status is None:
+    if status is None or status == OFFICIAL_EXPORT_IN_PROGRESS_STATUS:
         return D1ExportInProgress(bookmark)
     if status == "error":
         raise D1BackupSafetyError("export_reported_error")
