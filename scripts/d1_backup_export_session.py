@@ -82,12 +82,51 @@ class D1ExportComplete:
     signed_url: str
 
 
+@dataclass(frozen=True)
+class D1ExportResponseShape:
+    """Value-free export-response structure for a one-shot safe diagnosis."""
+
+    http_status: int
+    success: bool | None
+    result_type: str
+    result_fields: tuple[str, ...]
+    status_present: bool
+    status_type: str | None
+    at_bookmark_present: bool
+    signed_url_present: bool
+    errors_present: bool
+    error_count: int | None
+    messages_present: bool
+    message_count: int | None
+
+
 class HttpOpener(Protocol):
     def __call__(self, request: Request, timeout: float) -> Any: ...
 
 
 class UrlOpener(Protocol):
     def __call__(self, url: str, timeout: float) -> Any: ...
+
+
+def safe_export_response_shape(response: D1BackupResponse) -> D1ExportResponseShape:
+    """Describe only JSON shape; never expose or retain response values."""
+    payload = response.payload
+    success = payload.get("success") if isinstance(payload.get("success"), bool) else None
+    result = payload.get("result")
+    result_type = "object" if isinstance(result, Mapping) else type(result).__name__
+    fields = tuple(sorted(key for key in result if isinstance(key, str))) if isinstance(result, Mapping) else ()
+    status = result.get("status") if isinstance(result, Mapping) else None
+    nested = result.get("result") if isinstance(result, Mapping) else None
+    errors, messages = payload.get("errors"), payload.get("messages")
+    return D1ExportResponseShape(
+        response.status, success, result_type, fields,
+        isinstance(result, Mapping) and "status" in result,
+        type(status).__name__ if isinstance(result, Mapping) and "status" in result else None,
+        isinstance(result, Mapping) and "at_bookmark" in result,
+        isinstance(nested, Mapping) and "signed_url" in nested,
+        "errors" in payload, len(errors) if isinstance(errors, list) else None,
+        "messages" in payload, len(messages) if isinstance(messages, list) else None,
+    )
 
 
 class FixedIdentityD1BackupTransport:

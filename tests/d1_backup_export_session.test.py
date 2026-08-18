@@ -102,6 +102,15 @@ class D1BackupExportSessionTest(unittest.TestCase):
             with self.assertRaises((module.D1BackupSafetyError,module.D1BackupTransportError)) as caught:module.parse_export_polling_response(response)
             self.assertNotIn("opaque_token",str(caught.exception)); self.assertNotIn("download.example",str(caught.exception))
 
+    def test_safe_shape_diagnostic_reports_structure_without_values(self):
+        bookmark="bookmark-not-for-output"; signed="https://download.example/not-for-output"
+        response=module.D1BackupResponse(200,"application/json",1,{"success":True,"result":{"at_bookmark":bookmark,"status":"complete","result":{"signed_url":signed}},"errors":[],"messages":["not-for-output"]})
+        diagnostic=module.safe_export_response_shape(response)
+        self.assertEqual(200,diagnostic.http_status);self.assertIs(True,diagnostic.success);self.assertEqual("object",diagnostic.result_type);self.assertEqual(("at_bookmark","result","status"),diagnostic.result_fields);self.assertTrue(diagnostic.status_present);self.assertEqual("str",diagnostic.status_type);self.assertTrue(diagnostic.at_bookmark_present);self.assertTrue(diagnostic.signed_url_present);self.assertEqual(0,diagnostic.error_count);self.assertEqual(1,diagnostic.message_count)
+        text=str(diagnostic);self.assertNotIn(bookmark,text);self.assertNotIn(signed,text);self.assertNotIn("not-for-output",text)
+        malformed=module.safe_export_response_shape(module.D1BackupResponse(200,"application/json",1,{"success":"true","result":[]}))
+        self.assertIsNone(malformed.success);self.assertEqual("list",malformed.result_type);self.assertFalse(malformed.status_present);self.assertFalse(malformed.at_bookmark_present);self.assertFalse(malformed.signed_url_present)
+
     def test_export_polling_limit_timeout_and_bookmark_change_fail_closed(self):
         def transport_for(responses):
             return module.FixedIdentityD1BackupTransport(self.identity(),"opaque",lambda *_args,**_kwargs:responses.pop(0))
