@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
+from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -65,8 +67,27 @@ class D1BackupResponse:
     payload: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class D1ExportInProgress:
+    """In-memory polling cursor; never persisted or logged."""
+
+    at_bookmark: str
+
+
+@dataclass(frozen=True)
+class D1ExportComplete:
+    """In-memory download capability returned only after a complete response."""
+
+    at_bookmark: str
+    signed_url: str
+
+
 class HttpOpener(Protocol):
     def __call__(self, request: Request, timeout: float) -> Any: ...
+
+
+class UrlOpener(Protocol):
+    def __call__(self, url: str, timeout: float) -> Any: ...
 
 
 class FixedIdentityD1BackupTransport:
@@ -155,3 +176,94 @@ class FixedIdentityD1BackupTransport:
                 raise D1BackupSafetyError("export_bookmark_invalid")
             payload["current_bookmark"] = current_bookmark
         return self._request("POST", "/export", payload)
+
+
+def parse_export_polling_response(response: D1BackupResponse) -> D1ExportInProgress | D1ExportComplete:
+    """Accept only documented polling cursors or completed signed URLs.
+
+    Cloudflare documents ``status`` only for terminal ``complete`` and
+    ``error`` responses.  An otherwise-valid response with ``at_bookmark`` and
+    no terminal status remains in progress.  Unknown status values fail closed.
+    """
+    result = response.payload.get("result")
+    if not isinstance(result, Mapping):
+        raise D1BackupSafetyError("export_response_invalid")
+    bookmark = result.get("at_bookmark")
+    if not isinstance(bookmark, str) or not bookmark:
+        raise D1BackupSafetyError("export_polling_bookmark_invalid")
+    status = result.get("status")
+    if status is None:
+        return D1ExportInProgress(bookmark)
+    if status == "error":
+        raise D1BackupSafetyError("export_reported_error")
+    if status != "complete":
+        raise D1BackupSafetyError("export_status_unknown")
+    completed = result.get("result")
+    signed_url = completed.get("signed_url") if isinstance(completed, Mapping) else None
+    parsed = urlparse(signed_url) if isinstance(signed_url, str) else None
+    if not isinstance(signed_url, str) or not signed_url or parsed is None or parsed.scheme != "https" or not parsed.netloc:
+        raise D1BackupSafetyError("export_signed_url_invalid")
+    return D1ExportComplete(bookmark, signed_url)
+
+
+class D1ExportPollingSession:
+    """One export start followed only by bounded polls of the same bookmark."""
+
+    def __init__(
+        self,
+        transport: FixedIdentityD1BackupTransport,
+        *,
+        max_polls: int = 5,
+        timeout_seconds: float = 120.0,
+        poll_interval_seconds: float = 1.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        download_opener: UrlOpener = urlopen,
+    ) -> None:
+        if not isinstance(max_polls, int) or max_polls < 1:
+            raise D1BackupSafetyError("export_poll_limit_invalid")
+        if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
+            raise D1BackupSafetyError("export_timeout_invalid")
+        if not isinstance(poll_interval_seconds, (int, float)) or poll_interval_seconds < 0:
+            raise D1BackupSafetyError("export_poll_interval_invalid")
+        self._transport, self._max_polls, self._timeout_seconds = transport, max_polls, float(timeout_seconds)
+        self._poll_interval_seconds, self._clock, self._sleep, self._download_opener = float(poll_interval_seconds), clock, sleep, download_opener
+        self._started = False
+
+    def complete(self) -> D1ExportComplete:
+        if self._started:
+            raise D1BackupSafetyError("export_start_reuse_rejected")
+        self._started = True
+        started_at = self._clock()
+        outcome = parse_export_polling_response(self._transport.export_polling())
+        if isinstance(outcome, D1ExportComplete):
+            return outcome
+        bookmark = outcome.at_bookmark
+        for _ in range(self._max_polls):
+            if self._clock() - started_at >= self._timeout_seconds:
+                raise D1BackupSafetyError("export_poll_timeout")
+            if self._poll_interval_seconds:
+                self._sleep(self._poll_interval_seconds)
+            outcome = parse_export_polling_response(self._transport.export_polling(bookmark))
+            if outcome.at_bookmark != bookmark:
+                raise D1BackupSafetyError("export_polling_bookmark_changed")
+            if isinstance(outcome, D1ExportComplete):
+                return outcome
+        raise D1BackupSafetyError("export_poll_limit_reached")
+
+    def download(self, completed: D1ExportComplete) -> bytes:
+        if not isinstance(completed, D1ExportComplete):
+            raise D1BackupSafetyError("export_download_not_complete")
+        try:
+            response = self._download_opener(completed.signed_url, timeout=self._timeout_seconds)
+            try:
+                payload = response.read()
+            finally:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
+        except (URLError, TimeoutError, OSError):
+            raise D1BackupTransportError("export_download_transport_exception") from None
+        if not isinstance(payload, bytes) or not payload:
+            raise D1BackupSafetyError("export_download_invalid")
+        return payload

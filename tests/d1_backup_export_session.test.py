@@ -72,6 +72,48 @@ class D1BackupExportSessionTest(unittest.TestCase):
         self.assertEqual({"output_format":"polling"},json.loads(seen[1][2]))
         with self.assertRaises(module.D1BackupSafetyError): transport.export_polling("")
 
+    def test_export_starts_once_then_polls_same_bookmark_until_complete(self):
+        responses=[
+            Response({"success":True,"result":{"at_bookmark":"poll-bookmark"}}),
+            Response({"success":True,"result":{"at_bookmark":"poll-bookmark"}}),
+            Response({"success":True,"result":{"at_bookmark":"poll-bookmark","status":"complete","result":{"signed_url":"https://download.example/export.sql"}}}),
+        ]
+        seen=[]
+        def opener(request, timeout):
+            seen.append(json.loads(request.data)); return responses.pop(0)
+        transport=module.FixedIdentityD1BackupTransport(self.identity(),"opaque_token",opener)
+        session=module.D1ExportPollingSession(transport,max_polls=2,poll_interval_seconds=0,clock=lambda:0,download_opener=lambda _url,timeout:Response({"unused":True}))
+        completed=session.complete()
+        self.assertEqual("poll-bookmark",completed.at_bookmark); self.assertEqual(3,len(seen)); self.assertEqual({"output_format":"polling"},seen[0]); self.assertEqual({"output_format":"polling","current_bookmark":"poll-bookmark"},seen[1]); self.assertEqual(seen[1],seen[2])
+        with self.assertRaisesRegex(module.D1BackupSafetyError,"export_start_reuse_rejected"):session.complete()
+
+    def test_export_complete_only_allows_download_and_keeps_url_token_out_of_errors(self):
+        transport=module.FixedIdentityD1BackupTransport(self.identity(),"opaque_token",lambda *_args,**_kwargs:Response({"success":True,"result":{"at_bookmark":"b","status":"complete","result":{"signed_url":"https://download.example/opaque"}}}))
+        session=module.D1ExportPollingSession(transport,poll_interval_seconds=0,download_opener=lambda _url,timeout:type("Download",(),{"read":lambda self:b"sqlite export", "close":lambda self:None})())
+        completed=session.complete(); self.assertEqual(b"sqlite export",session.download(completed))
+        with self.assertRaises(module.D1BackupSafetyError):session.download(module.D1ExportInProgress("b"))
+        for bad in (
+            {"success":True,"result":{"at_bookmark":"b","status":"error"}},
+            {"success":True,"result":{"at_bookmark":"b","status":"unexpected"}},
+            {"success":True,"result":{"at_bookmark":"b","status":"complete","result":{}}},
+            {"success":True,"result":{}},
+        ):
+            response=module.D1BackupResponse(200,"application/json",1,bad)
+            with self.assertRaises((module.D1BackupSafetyError,module.D1BackupTransportError)) as caught:module.parse_export_polling_response(response)
+            self.assertNotIn("opaque_token",str(caught.exception)); self.assertNotIn("download.example",str(caught.exception))
+
+    def test_export_polling_limit_timeout_and_bookmark_change_fail_closed(self):
+        def transport_for(responses):
+            return module.FixedIdentityD1BackupTransport(self.identity(),"opaque",lambda *_args,**_kwargs:responses.pop(0))
+        processing=lambda bookmark:Response({"success":True,"result":{"at_bookmark":bookmark}})
+        with self.assertRaisesRegex(module.D1BackupSafetyError,"export_poll_limit_reached"):
+            module.D1ExportPollingSession(transport_for([processing("b"),processing("b"),processing("b")]),max_polls=2,poll_interval_seconds=0,clock=lambda:0).complete()
+        clocks=iter((0,1))
+        with self.assertRaisesRegex(module.D1BackupSafetyError,"export_poll_timeout"):
+            module.D1ExportPollingSession(transport_for([processing("b")]),max_polls=1,timeout_seconds=1,poll_interval_seconds=0,clock=lambda:next(clocks)).complete()
+        with self.assertRaisesRegex(module.D1BackupSafetyError,"export_polling_bookmark_changed"):
+            module.D1ExportPollingSession(transport_for([processing("b"),processing("other")]),max_polls=1,poll_interval_seconds=0,clock=lambda:0).complete()
+
     def test_malformed_or_failed_responses_stop_without_token_or_body_in_error(self):
         cases=[Response({"success":False}),Response({"success":True,"result":{}},content_type="text/html"),Response({"success":True,"result":{}},status=500)]
         for response in cases:
