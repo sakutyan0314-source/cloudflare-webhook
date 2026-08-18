@@ -22,3 +22,8 @@ Library/
 
 # Logs
 *.log
+
+# Phase 1B local-only human review ledger (the implementation also rejects
+# repository paths; these patterns prevent accidental staging as a second guard).
+topic-candidate-ledger/
+*.topic-candidate-ledger.jsonl
