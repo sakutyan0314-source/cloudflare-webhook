@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+const source=await fs.readFile(new URL("../src/approved_canary_worker_adapter.js",import.meta.url),"utf8");
+const adapter=await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const brief={production_input_id:"input",topic_candidate_id:"candidate",human_review_id:"review",topic:"topic",title_hint:"title",primary_intent:"how",target_audience:"teams",problem_to_solve:"problem",cluster_id:"cluster",internal_link_guidance:{related_article_ids:[1]},ai_generation_authorized:false,publication_authorized:false,execution_authorized:false};
+assert.match(adapter.buildApprovedCanaryGeminiInstruction(brief),/テーマ: topic/);
+assert.throws(()=>adapter.buildApprovedCanaryGeminiInstruction({...brief,prompt:"bad"}));
+let calls=[];const repo={acquire:async()=>"e",transition:async(_e,s)=>{calls.push(s);return s},linkPipelineRun:async()=>calls.push("link_pipeline"),linkQualityGateAudit:async()=>calls.push("link_audit")};
+await adapter.runApprovedCanaryWorker({request:{trigger_type:"approved_canary",production_input:{},approval:{},production_execution_id:"e",pipeline_run_id:1,brief},authorize:async()=>calls.push("auth"),validate:async()=>calls.push("validate"),executionRepository:repo,pipeline:async x=>{assert.equal(x.maxAttempts,1);calls.push("pipeline");return {}},qualityGate:async()=>({classification:"pass",audit_id:"audit"}),staging:{create:async()=>calls.push("staging")}});
+assert.deepEqual(calls,["auth","validate","preflight_verified","link_pipeline","approval_verified","send_started","pipeline","link_audit","staging","outcome_known_success"]);
+console.log("approved canary worker adapter tests passed");
