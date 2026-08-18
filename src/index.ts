@@ -12,6 +12,9 @@ const PRIVATE_TEXT_HEADERS = {
   "Cache-Control": "no-store"
 };
 const AUTHORIZATION_HEADER_MAX_LENGTH = 1024;
+const INTERNAL_REQUEST_MAX_BYTES = 16 * 1024;
+const APPROVED_CANARY_PATH = "/internal/approved-canary";
+const APPROVED_CANARY_PUBLICATION_PATH = "/internal/approved-canary/publication";
 const EXTERNAL_API_TIMEOUTS = {
   gemini: 45_000,
   claude: 60_000,
@@ -50,6 +53,12 @@ class OperationError extends Error {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === APPROVED_CANARY_PATH) {
+      return handleApprovedCanaryRequest(request, env);
+    }
+    if (url.pathname === APPROVED_CANARY_PUBLICATION_PATH) {
+      return handleApprovedCanaryPublicationRequest(request, env);
+    }
     if (url.pathname === "/" || url.pathname === "") {
       return handleHomePage(env, url);
     }
@@ -181,6 +190,60 @@ async function authorizeOperationsRequest(request, env, allowedMethod) {
   }
 
   return null;
+}
+
+function internalError(classification, status = 400) {
+  return new Response(JSON.stringify({ status: "error", classification }), {
+    status, headers: PRIVATE_JSON_HEADERS
+  });
+}
+
+async function parseInternalJsonRequest(request, allowedFields) {
+  const contentType = request.headers.get("Content-Type") || "";
+  const length = Number(request.headers.get("Content-Length") || "0");
+  if (!contentType.toLowerCase().startsWith("application/json") || !Number.isFinite(length) || length > INTERNAL_REQUEST_MAX_BYTES) {
+    throw new Error("request_invalid");
+  }
+  const text = await request.text();
+  if (new TextEncoder().encode(text).byteLength > INTERNAL_REQUEST_MAX_BYTES) throw new Error("request_invalid");
+  let payload;
+  try { payload = JSON.parse(text); } catch { throw new Error("request_invalid"); }
+  if (!payload || Array.isArray(payload) || typeof payload !== "object" || Object.keys(payload).some((key) => !allowedFields.has(key))) {
+    throw new Error("request_invalid");
+  }
+  return payload;
+}
+
+async function handleApprovedCanaryRequest(request, env) {
+  const accessError = await authorizeOperationsRequest(request, env, "POST");
+  if (accessError) return accessError;
+  try {
+    const payload = await parseInternalJsonRequest(request, new Set(["trigger_type", "production_input_id", "approval_id", "production_execution_id", "pipeline_run_id"]));
+    if (payload.trigger_type !== "approved_canary" || !["production_input_id", "approval_id", "production_execution_id"].every((key) => typeof payload[key] === "string" && payload[key])) throw new Error("request_invalid");
+    const runtime = env?.APPROVED_CANARY_RUNTIME;
+    if (!runtime || typeof runtime.resolve !== "function") return internalError("canary_runtime_unavailable", 503);
+    const resolved = await runtime.resolve(payload);
+    const { runApprovedCanaryWorker } = await import("./approved_canary_worker_adapter.js");
+    const result = await runApprovedCanaryWorker({ ...resolved, request: resolved.request, authorize: async () => {}, validate: resolved.validate });
+    return new Response(JSON.stringify({ status: "accepted", execution_classification: result?.state || "accepted" }), { status: 202, headers: PRIVATE_JSON_HEADERS });
+  } catch { return internalError("approved_canary_request_rejected"); }
+}
+
+async function handleApprovedCanaryPublicationRequest(request, env) {
+  const accessError = await authorizeOperationsRequest(request, env, "POST");
+  if (accessError) return accessError;
+  try {
+    const fields = new Set(["trigger_type", "staging_draft_id", "production_execution_id", "production_input_id", "publication_approval_id", "quality_gate_audit_id", "final_content_fingerprint"]);
+    const payload = await parseInternalJsonRequest(request, fields);
+    if (payload.trigger_type !== "approved_canary_publication" || Object.keys(payload).length !== fields.size) throw new Error("request_invalid");
+    if ([...fields].filter((key) => key !== "trigger_type").some((key) => typeof payload[key] !== "string" || !payload[key])) throw new Error("request_invalid");
+    const runtime = env?.APPROVED_CANARY_PUBLICATION_RUNTIME;
+    if (!runtime || typeof runtime.resolve !== "function") return internalError("publication_runtime_unavailable", 503);
+    const resolved = await runtime.resolve(payload);
+    const { runApprovedCanaryPublication } = await import("./publication_worker_adapter.js");
+    const result = await runApprovedCanaryPublication({ ...resolved, request: resolved.request, authorize: async () => {} });
+    return new Response(JSON.stringify({ status: "accepted", final_article_id: result?.final_article_id ?? null }), { status: 202, headers: PRIVATE_JSON_HEADERS });
+  } catch { return internalError("publication_request_rejected"); }
 }
 
 function unauthorizedResponse() {
