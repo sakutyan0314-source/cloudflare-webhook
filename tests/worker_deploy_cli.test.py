@@ -36,6 +36,12 @@ class WorkerDeployCliTest(unittest.TestCase):
    def deploy(**kwargs):
     calls.append(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,None,timed_out,interrupted,classification)
    k,_=self.kwargs(deploy_function=deploy); self.assertEqual(expected,cli.run_cli(self.command(),**k)['classification']); self.assertEqual(1,len(calls))
+ def test_exit_zero_unobserved_is_not_process_success(self):
+  calls=[]
+  def deploy(**kwargs):
+   calls.append(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,True,False,False,0,False,False,'process_succeeded_unobserved')
+  k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
+  self.assertEqual('deploy_outcome_unknown',result['classification']); self.assertEqual(1,len(calls))
  def test_token_is_child_environment_not_argv(self):
   token='not-in-argv'; seen={}
   def deploy(**kwargs):

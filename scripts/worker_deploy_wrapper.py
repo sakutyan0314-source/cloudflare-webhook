@@ -19,6 +19,15 @@ def run_deploy(*,root:Path,git_head:str,account:str,runner:Callable[[Sequence[st
  except TimeoutError:return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,False,False,False,None,True,False,'process_timeout')
  except KeyboardInterrupt:return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,False,False,False,None,False,True,'process_interrupted')
  except OSError:return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,False,False,False,False,None,False,False,'wrangler_start_failed')
- text=(out or '')+'\n'+(err or ''); build='Total Upload:' in text or 'Compiled Worker' in text; upload='Uploading' in text or 'Total Upload:' in text; response='Current Deployment ID:' in text or 'Deployed' in text
- classification='deploy_succeeded' if code==0 and response else ('deploy_failed_after_upload' if upload else ('build_failed' if build else 'deploy_failed_before_upload'))
+ text=(out or '')+'\n'+(err or '')
+ # Wrangler 4.120.0 emits these lifecycle messages for ``wrangler deploy``.
+ # We retain only their boolean presence, never the raw process streams.
+ build='Compiled Worker successfully' in text
+ upload='Uploading' in text or 'Uploaded ' in text
+ response='Current Version ID:' in text or 'Worker Version ID:' in text
+ if code==0 and response: classification='deploy_succeeded'
+ elif code==0: classification='process_succeeded_unobserved'
+ elif upload: classification='deploy_failed_after_upload'
+ elif build: classification='build_failed'
+ else: classification='deploy_failed_before_upload'
  return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,build,upload,response,code,False,False,classification)

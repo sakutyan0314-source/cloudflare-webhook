@@ -149,7 +149,7 @@ def run_cli(
         token = ""
     if audit.classification == "deploy_succeeded":
         return _safe_result("deploy_succeeded_process_level", audit)
-    if audit.timed_out or audit.interrupted or audit.classification == "deploy_failed_after_upload":
+    if audit.timed_out or audit.interrupted or audit.classification in {"deploy_failed_after_upload", "process_succeeded_unobserved"}:
         return _safe_result("deploy_outcome_unknown", audit)
     return _safe_result(audit.classification, audit)
 
