@@ -13,13 +13,13 @@ class WorkerDeployCliTest(unittest.TestCase):
   def deploy(**kwargs):
    calls.append(kwargs)
    return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,True,True,True,0,False,False,'deploy_succeeded')
-  base=dict(root=ROOT,cwd=ROOT,home=ROOT,token_provider=lambda:'safe-token',git_head=lambda _:HEAD,tracked_clean=lambda _:True,filesystem_ready=lambda _:True,version_getter=lambda _:w.WRANGLER_VERSION,deploy_function=deploy)
+  base=dict(root=ROOT,cwd=ROOT,home=ROOT,token_provider=lambda:'safe-token',git_head=lambda _:HEAD,tracked_clean=lambda _:True,filesystem_ready=lambda _:True,version_getter=lambda _:w.WRANGLER_VERSION,deploy_function=deploy,environment={})
   base.update(overrides); return base,calls
  def command(self, *extra): return ['deploy-once','--expected-head',HEAD,'--expected-account',w.ACCOUNT,'--expected-wrangler-version',w.WRANGLER_VERSION,*extra]
  def test_requires_explicit_subcommand(self):
   k,c=self.kwargs(); self.assertEqual('deploy_command_required',cli.run_cli([],**k)['classification']); self.assertEqual([],c)
  def test_preflights_stop_before_deploy(self):
-  cases=[({'git_head':lambda _: 'other'},'git_head_mismatch'),({'tracked_clean':lambda _:False},'tracked_worktree_dirty'),({'cwd':ROOT.parent},'repository_root_mismatch'),({'filesystem_ready':lambda _:False},'filesystem_preflight_failed'),({'version_getter':lambda _:None},'wrangler_version_mismatch'),({'token_provider':lambda:''},'worker_token_missing')]
+  cases=[({'git_head':lambda _: 'other'},'git_head_mismatch'),({'tracked_clean':lambda _:False},'tracked_worktree_dirty'),({'cwd':ROOT.parent},'repository_root_mismatch'),({'filesystem_ready':lambda _:False},'filesystem_preflight_failed'),({'version_getter':lambda _:None},'wrangler_version_mismatch'),({'token_provider':lambda:''},'worker_token_missing'),({'environment':{'CLOUDFLARE_ENV':'preview'}},'unapproved_wrangler_environment'),({'environment':{'CLOUDFLARE_ACCOUNT_ID':'wrong'}},'account_environment_mismatch')]
   for override, expected in cases:
    with self.subTest(expected=expected):
     k,c=self.kwargs(**override); self.assertEqual(expected,cli.run_cli(self.command(),**k)['classification']); self.assertEqual([],c)
@@ -56,8 +56,11 @@ class WorkerDeployCliTest(unittest.TestCase):
    observed['args']=args; observed['env']=kwargs['env']
    return subprocess.CompletedProcess(args, 0, '', '')
   with patch.object(cli.subprocess,'run',fake_run):
-   result=cli._deploy_runner(token)(('npx','--no-install','wrangler','deploy'),ROOT)
+   result=cli._deploy_runner(token,{'CLOUDFLARE_ENV':'preview','CF_API_TOKEN':'old-token'})(('npx','--no-install','wrangler','deploy'),ROOT)
   self.assertEqual(0,result[0]); self.assertNotIn(token,observed['args'])
   self.assertEqual(token,observed['env']['CLOUDFLARE_API_TOKEN'])
+  self.assertEqual(w.ACCOUNT,observed['env']['CLOUDFLARE_ACCOUNT_ID'])
+  self.assertEqual('log',observed['env']['WRANGLER_LOG'])
+  self.assertNotIn('CLOUDFLARE_ENV',observed['env']); self.assertNotIn('CF_API_TOKEN',observed['env'])
 
 if __name__=='__main__': unittest.main()

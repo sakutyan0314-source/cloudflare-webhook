@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 from worker_deploy_wrapper import ACCOUNT, WRANGLER_VERSION, DeployAudit, run_deploy
 
@@ -81,10 +81,15 @@ def _prompt_worker_token() -> str:
     return getpass.getpass("Worker token: ").strip()
 
 
-def _deploy_runner(token: str) -> Callable[[Sequence[str], Path], tuple[int, str, str]]:
+def _deploy_runner(token: str, parent_env: Mapping[str, str] | None = None) -> Callable[[Sequence[str], Path], tuple[int, str, str]]:
     def runner(args: Sequence[str], cwd: Path) -> tuple[int, str, str]:
-        # The official Wrangler variable is supplied only to this child process.
-        env = {**os.environ, "CLOUDFLARE_API_TOKEN": token}
+        # The official Wrangler token and fixed Account are supplied only to
+        # this child.  Environment/profile selectors are removed so they
+        # cannot silently change the Worker target or suppress safe markers.
+        env = dict(parent_env if parent_env is not None else os.environ)
+        for key in ("CLOUDFLARE_ENV", "CF_ACCOUNT_ID", "CF_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL", "CF_API_KEY", "CF_EMAIL"):
+            env.pop(key, None)
+        env.update({"CLOUDFLARE_API_TOKEN": token, "CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "WRANGLER_LOG": "log", "WRANGLER_LOG_SANITIZE": "true"})
         completed = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=180, env=env)
         return completed.returncode, completed.stdout, completed.stderr
     return runner
@@ -102,6 +107,7 @@ def run_cli(
     filesystem_ready: Callable[[Path], bool] = _filesystem_ready,
     version_getter: Callable[[Path], str | None] = _local_wrangler_version,
     deploy_function: Callable[..., DeployAudit] = run_deploy,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("command", nargs="?")
@@ -114,6 +120,7 @@ def run_cli(
         return _safe_result("invalid_arguments")
     actual_cwd = (cwd or Path.cwd()).resolve()
     actual_home = (home or Path.home()).resolve()
+    parent_env = environment if environment is not None else os.environ
     root = root.resolve()
     if args.command != "deploy-once":
         return _safe_result("deploy_command_required")
@@ -121,6 +128,11 @@ def run_cli(
         return _safe_result("repository_root_mismatch")
     if args.expected_account != ACCOUNT:
         return _safe_result("account_mismatch")
+    if parent_env.get("CLOUDFLARE_ENV"):
+        return _safe_result("unapproved_wrangler_environment")
+    configured_account = parent_env.get("CLOUDFLARE_ACCOUNT_ID")
+    if configured_account and configured_account != ACCOUNT:
+        return _safe_result("account_environment_mismatch")
     if args.expected_wrangler_version != WRANGLER_VERSION:
         return _safe_result("wrangler_version_mismatch")
     # The caller must explicitly supply the human-approved commit; it is then
@@ -142,7 +154,7 @@ def run_cli(
             root=root,
             git_head=args.expected_head,
             account=args.expected_account,
-            runner=_deploy_runner(token),
+            runner=_deploy_runner(token, parent_env),
             version_getter=lambda: version_getter(root) or "",
         )
     finally:
