@@ -31,8 +31,13 @@ class T(unittest.TestCase):
   x,_=self.execute(0,'OpenNext project detected, calling `opennextjs-cloudflare deploy`\nUsing redirected Wrangler configuration.')
   self.assertTrue(x.opennext_delegation_observed); self.assertTrue(x.config_redirect_observed)
  def test_safe_execution_metadata(self):
-  x,_=self.execute(); self.assertEqual('fixed_npx_no_install_wrangler_deploy',x.argv_classification); self.assertEqual('repository_root',x.cwd_classification); self.assertEqual('repository_wrangler_toml',x.config_discovery_classification)
- def test_timeout_interrupt_start(self):self.assertEqual('process_timeout',self.execute(exc=TimeoutError())[0].classification);self.assertEqual('process_interrupted',self.execute(exc=KeyboardInterrupt())[0].classification);self.assertEqual('wrangler_start_failed',self.execute(exc=OSError())[0].classification)
+  x,c=self.execute(); self.assertEqual('fixed_node_local_wrangler_cli_deploy',x.argv_classification); self.assertEqual(('node','--no-warnings',str(ROOT/w.WRANGLER_CLI_RELATIVE_PATH),'deploy'),c[0]); self.assertEqual('repository_root',x.cwd_classification); self.assertEqual('repository_wrangler_toml',x.config_discovery_classification)
+ def test_direct_cli_signal_is_never_a_success(self):
+  x,_=self.execute(-15,''); self.assertTrue(x.signal_terminated); self.assertEqual('process_signal_terminated',x.classification)
+ def test_timeout_interrupt_start(self):
+  self.assertEqual('process_timeout',self.execute(exc=TimeoutError())[0].classification)
+  self.assertEqual('process_timeout',self.execute(exc=__import__('subprocess').TimeoutExpired(('node',),180))[0].classification)
+  self.assertEqual('process_interrupted',self.execute(exc=KeyboardInterrupt())[0].classification);self.assertEqual('wrangler_start_failed',self.execute(exc=OSError())[0].classification)
  def test_preflight(self):
   x=w.run_deploy(root=ROOT,git_head='h',account='wrong',runner=lambda *_:(_ for _ in ()).throw(Exception()),version_getter=lambda:w.WRANGLER_VERSION);self.assertEqual('preflight_failed',x.classification)
  def test_version_mismatch_stops_before_runner(self):

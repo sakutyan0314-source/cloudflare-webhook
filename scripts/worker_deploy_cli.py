@@ -14,13 +14,16 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Callable, Mapping, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-from worker_deploy_wrapper import ACCOUNT, WRANGLER_VERSION, DeployAudit, run_deploy
+from worker_deploy_wrapper import ACCOUNT, WRANGLER_VERSION, WRANGLER_CLI_RELATIVE_PATH, DeployAudit, run_deploy
+from worker_deployment_diagnostics import DeploymentShapeError, LatestDeployment, parse_latest_deployment
 
 ROOT = Path(__file__).parents[1].resolve()
 
 
-def _safe_result(classification: str, audit: DeployAudit | None = None) -> dict[str, object]:
+def _safe_result(classification: str, audit: DeployAudit | None = None, postcheck: Mapping[str, object] | None = None) -> dict[str, object]:
     result: dict[str, object] = {"classification": classification}
     if audit is not None:
         result["audit"] = {
@@ -42,7 +45,11 @@ def _safe_result(classification: str, audit: DeployAudit | None = None) -> dict[
             "autoconfig_aborted_observed": audit.autoconfig_aborted_observed,
             "opennext_delegation_observed": audit.opennext_delegation_observed,
             "config_redirect_observed": audit.config_redirect_observed,
+            "version_marker_observed": audit.version_marker_observed,
+            "signal_terminated": audit.signal_terminated,
         }
+    if postcheck is not None:
+        result["post_deploy_check"] = dict(postcheck)
     return result
 
 
@@ -76,12 +83,12 @@ def _filesystem_ready(home: Path) -> bool:
 
 
 def _local_wrangler_version(root: Path) -> str | None:
-    binary = root / "node_modules" / ".bin" / "wrangler"
-    if not binary.exists():
+    entrypoint = root / WRANGLER_CLI_RELATIVE_PATH
+    if not entrypoint.is_file():
         return None
     clean_env = {key: value for key, value in os.environ.items() if key != "CLOUDFLARE_API_TOKEN"}
     try:
-        code, output, _ = _run(("npx", "--no-install", "wrangler", "--version"), root, clean_env)
+        code, output, _ = _run(("node", "--no-warnings", str(entrypoint), "--version"), root, clean_env)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return output.strip().splitlines()[-1] if code == 0 and output.strip() else None
@@ -105,6 +112,25 @@ def _deploy_runner(token: str, parent_env: Mapping[str, str] | None = None) -> C
     return runner
 
 
+def _fetch_latest_deployment(token: str) -> LatestDeployment:
+    """Perform exactly one GET and retain no response text outside this call."""
+    url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/workers/scripts/cloudflare-webhook/deployments"
+    request = Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, OSError, ValueError, UnicodeError):
+        raise DeploymentShapeError("deployment_postcheck_unavailable") from None
+    return parse_latest_deployment(payload)
+
+
+def _verify_post_deploy(pre_deploy_version: str, latest: LatestDeployment) -> dict[str, object]:
+    """Compare value-free deployment metadata without persisting IDs or JSON."""
+    traffic_expected = latest.version_count == 1 and latest.traffic_total == 100.0 and latest.versions[0].percentage == 100.0
+    version_changed = latest.versions[0].version_id != pre_deploy_version
+    return {"attempted": True, "succeeded": True, "version_changed": version_changed, "traffic_expected": traffic_expected, "classification": "post_deploy_verified" if version_changed and traffic_expected else "post_deploy_state_mismatch"}
+
+
 def run_cli(
     argv: Sequence[str],
     *,
@@ -117,6 +143,7 @@ def run_cli(
     filesystem_ready: Callable[[Path], bool] = _filesystem_ready,
     version_getter: Callable[[Path], str | None] = _local_wrangler_version,
     deploy_function: Callable[..., DeployAudit] = run_deploy,
+    post_deploy_fetcher: Callable[[str], LatestDeployment] = _fetch_latest_deployment,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     parser = argparse.ArgumentParser(add_help=False)
@@ -124,6 +151,7 @@ def run_cli(
     parser.add_argument("--expected-head")
     parser.add_argument("--expected-account")
     parser.add_argument("--expected-wrangler-version")
+    parser.add_argument("--pre-deploy-version")
     try:
         args = parser.parse_args(list(argv))
     except SystemExit:
@@ -145,6 +173,8 @@ def run_cli(
         return _safe_result("account_environment_mismatch")
     if args.expected_wrangler_version != WRANGLER_VERSION:
         return _safe_result("wrangler_version_mismatch")
+    if not args.pre_deploy_version:
+        return _safe_result("pre_deploy_version_required")
     # The caller must explicitly supply the human-approved commit; it is then
     # compared to the actual checkout before any subprocess can start.
     if not args.expected_head or git_head(root) != args.expected_head:
@@ -169,13 +199,19 @@ def run_cli(
             child_environment_classification="approved_account_base_environment_log_sanitized",
             stdin_managed=True,
         )
+        if audit.classification != "deploy_succeeded":
+            if audit.timed_out or audit.interrupted or audit.signal_terminated or audit.classification in {"deploy_failed_after_upload", "process_succeeded_unobserved", "process_signal_terminated"}:
+                return _safe_result("deploy_outcome_unknown", audit)
+            return _safe_result(audit.classification, audit)
+        try:
+            postcheck = _verify_post_deploy(args.pre_deploy_version, post_deploy_fetcher(token))
+        except (DeploymentShapeError, OSError, ValueError):
+            return _safe_result("deploy_outcome_unknown", audit, {"attempted": True, "succeeded": False, "version_changed": False, "traffic_expected": False, "classification": "post_deploy_check_unavailable"})
+        if postcheck["classification"] != "post_deploy_verified":
+            return _safe_result("deploy_outcome_unknown", audit, postcheck)
+        return _safe_result("deploy_succeeded_verified", audit, postcheck)
     finally:
         token = ""
-    if audit.classification == "deploy_succeeded":
-        return _safe_result("deploy_succeeded_process_level", audit)
-    if audit.timed_out or audit.interrupted or audit.classification in {"deploy_failed_after_upload", "process_succeeded_unobserved"}:
-        return _safe_result("deploy_outcome_unknown", audit)
-    return _safe_result(audit.classification, audit)
 
 
 def main() -> int:

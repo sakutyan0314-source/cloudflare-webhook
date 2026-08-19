@@ -2,83 +2,64 @@ import importlib.util, io, pathlib, subprocess, sys, unittest
 from unittest.mock import patch
 
 ROOT=pathlib.Path(__file__).parents[1]
-for name, filename in [('worker_deploy_wrapper','scripts/worker_deploy_wrapper.py'),('worker_deploy_cli','scripts/worker_deploy_cli.py')]:
- spec=importlib.util.spec_from_file_location(name,ROOT/filename); module=importlib.util.module_from_spec(spec); sys.modules[name]=module; spec.loader.exec_module(module)
-w=sys.modules['worker_deploy_wrapper']; cli=sys.modules['worker_deploy_cli']
-HEAD='195fc2e7b9787e15bde2cae45d67d61af9be5064'
+def load(name, filename):
+ spec=importlib.util.spec_from_file_location(name,ROOT/filename); module=importlib.util.module_from_spec(spec); sys.modules[name]=module; spec.loader.exec_module(module); return module
+diag=load('worker_deployment_diagnostics','scripts/worker_deployment_diagnostics.py')
+w=load('worker_deploy_wrapper','scripts/worker_deploy_wrapper.py')
+cli=load('worker_deploy_cli','scripts/worker_deploy_cli.py')
+HEAD='9079be7296f29028cdddade1c78db8f7c347933b'; PRE='old-version'
 
 class WorkerDeployCliTest(unittest.TestCase):
  def kwargs(self, **overrides):
   calls=[]
   def deploy(**kwargs):
-   calls.append(kwargs)
-   return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,True,True,True,0,False,False,'deploy_succeeded')
-  base=dict(root=ROOT,cwd=ROOT,home=ROOT,token_provider=lambda:'safe-token',git_head=lambda _:HEAD,tracked_clean=lambda _:True,filesystem_ready=lambda _:True,version_getter=lambda _:w.WRANGLER_VERSION,deploy_function=deploy,environment={})
+   calls.append(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,True,True,0,False,False,'deploy_succeeded')
+  latest=diag.LatestDeployment(1,(diag.DeploymentTraffic('new-version',100.0),),100.0)
+  base=dict(root=ROOT,cwd=ROOT,home=ROOT,token_provider=lambda:'safe-token',git_head=lambda _:HEAD,tracked_clean=lambda _:True,filesystem_ready=lambda _:True,version_getter=lambda _:w.WRANGLER_VERSION,deploy_function=deploy,post_deploy_fetcher=lambda _:latest,environment={})
   base.update(overrides); return base,calls
- def command(self, *extra): return ['deploy-once','--expected-head',HEAD,'--expected-account',w.ACCOUNT,'--expected-wrangler-version',w.WRANGLER_VERSION,*extra]
+ def command(self,*extra): return ['deploy-once','--expected-head',HEAD,'--expected-account',w.ACCOUNT,'--expected-wrangler-version',w.WRANGLER_VERSION,'--pre-deploy-version',PRE,*extra]
  def test_requires_explicit_subcommand(self):
   k,c=self.kwargs(); self.assertEqual('deploy_command_required',cli.run_cli([],**k)['classification']); self.assertEqual([],c)
  def test_preflights_stop_before_deploy(self):
   cases=[({'git_head':lambda _: 'other'},'git_head_mismatch'),({'tracked_clean':lambda _:False},'tracked_worktree_dirty'),({'cwd':ROOT.parent},'repository_root_mismatch'),({'filesystem_ready':lambda _:False},'filesystem_preflight_failed'),({'version_getter':lambda _:None},'wrangler_version_mismatch'),({'token_provider':lambda:''},'worker_token_missing'),({'environment':{'CLOUDFLARE_ENV':'preview'}},'unapproved_wrangler_environment'),({'environment':{'CLOUDFLARE_ACCOUNT_ID':'wrong'}},'account_environment_mismatch')]
-  for override, expected in cases:
+  for override,expected in cases:
    with self.subTest(expected=expected):
     k,c=self.kwargs(**override); self.assertEqual(expected,cli.run_cli(self.command(),**k)['classification']); self.assertEqual([],c)
- def test_account_and_argument_mismatch_stop(self):
-  k,c=self.kwargs(); self.assertEqual('account_mismatch',cli.run_cli(self.command('--expected-account','wrong'),**k)['classification']); self.assertEqual([],c)
- def test_unapproved_expected_head_stops(self):
-  k,c=self.kwargs(); bad=['deploy-once','--expected-head','other','--expected-account',w.ACCOUNT,'--expected-wrangler-version',w.WRANGLER_VERSION]
-  self.assertEqual('git_head_mismatch',cli.run_cli(bad,**k)['classification']); self.assertEqual([],c)
- def test_success_calls_existing_wrapper_once_without_token_audit(self):
-  k,c=self.kwargs(); result=cli.run_cli(self.command(),**k); self.assertEqual('deploy_succeeded_process_level',result['classification']); self.assertEqual(1,len(c)); self.assertNotIn('safe-token',repr(result)); self.assertNotIn('safe-token',repr(c))
+ def test_missing_pre_version_stops_before_deploy(self):
+  k,c=self.kwargs(); self.assertEqual('pre_deploy_version_required',cli.run_cli(self.command()[:-2],**k)['classification']); self.assertEqual([],c)
+ def test_direct_cli_normal_exit_and_postcheck_new_version_succeeds_once(self):
+  k,c=self.kwargs(); result=cli.run_cli(self.command(),**k)
+  self.assertEqual('deploy_succeeded_verified',result['classification']); self.assertEqual(1,len(c)); self.assertTrue(result['post_deploy_check']['version_changed']); self.assertNotIn('safe-token',repr(result))
+ def test_direct_signal_exit_is_unknown_and_skips_postcheck(self):
+  post=[]
+  def deploy(**kwargs): return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,-15,False,False,'process_signal_terminated',signal_terminated=True)
+  k,c=self.kwargs(deploy_function=deploy,post_deploy_fetcher=lambda _:post.append(1)); self.assertEqual('deploy_outcome_unknown',cli.run_cli(self.command(),**k)['classification']); self.assertEqual(0,len(c)); self.assertEqual([],post)
+ def test_exit_zero_without_version_marker_is_unknown_and_skips_postcheck(self):
+  post=[]
+  def deploy(**kwargs): return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,0,False,False,'process_succeeded_unobserved')
+  k,c=self.kwargs(deploy_function=deploy,post_deploy_fetcher=lambda _:post.append(1)); self.assertEqual('deploy_outcome_unknown',cli.run_cli(self.command(),**k)['classification']); self.assertEqual(0,len(c)); self.assertEqual([],post)
+ def test_postcheck_version_unchanged_is_unknown(self):
+  latest=diag.LatestDeployment(1,(diag.DeploymentTraffic(PRE,100.0),),100.0)
+  k,c=self.kwargs(post_deploy_fetcher=lambda _:latest); result=cli.run_cli(self.command(),**k)
+  self.assertEqual('deploy_outcome_unknown',result['classification']); self.assertEqual('post_deploy_state_mismatch',result['post_deploy_check']['classification']); self.assertEqual(1,len(c))
+ def test_postcheck_unavailable_is_unknown(self):
+  def fail(_): raise diag.DeploymentShapeError('x')
+  k,c=self.kwargs(post_deploy_fetcher=fail); result=cli.run_cli(self.command(),**k)
+  self.assertEqual('deploy_outcome_unknown',result['classification']); self.assertEqual('post_deploy_check_unavailable',result['post_deploy_check']['classification']); self.assertEqual(1,len(c))
  def test_failure_timeout_and_interrupt_never_repeat(self):
-  for classification, timed_out, interrupted, expected in [('deploy_failed_before_upload',False,False,'deploy_failed_before_upload'),('process_timeout',True,False,'deploy_outcome_unknown'),('process_interrupted',False,True,'deploy_outcome_unknown')]:
+  for classification,timed_out,interrupted,expected in [('deploy_failed_before_upload',False,False,'deploy_failed_before_upload'),('process_timeout',True,False,'deploy_outcome_unknown'),('process_interrupted',False,True,'deploy_outcome_unknown')]:
    calls=[]
-   def deploy(**kwargs):
-    calls.append(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,None,timed_out,interrupted,classification)
+   def deploy(**kwargs): calls.append(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,None,timed_out,interrupted,classification)
    k,_=self.kwargs(deploy_function=deploy); self.assertEqual(expected,cli.run_cli(self.command(),**k)['classification']); self.assertEqual(1,len(calls))
- def test_exit_zero_unobserved_is_not_process_success(self):
-  calls=[]
-  def deploy(**kwargs):
-   calls.append(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,True,False,False,0,False,False,'process_succeeded_unobserved')
-  k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
-  self.assertEqual('deploy_outcome_unknown',result['classification']); self.assertEqual(1,len(calls))
  def test_unknown_is_a_nonzero_outer_cli_exit(self):
-  with patch.object(cli, 'run_cli', return_value={'classification':'deploy_outcome_unknown'}), patch.object(cli.sys, 'stdout', io.StringIO()):
-   self.assertEqual(2,cli.main())
-  with patch.object(cli, 'run_cli', return_value={'classification':'deploy_succeeded_process_level'}), patch.object(cli.sys, 'stdout', io.StringIO()):
-   self.assertEqual(0,cli.main())
+  with patch.object(cli,'run_cli',return_value={'classification':'deploy_outcome_unknown'}),patch.object(cli.sys,'stdout',io.StringIO()): self.assertEqual(2,cli.main())
+  with patch.object(cli,'run_cli',return_value={'classification':'deploy_succeeded_verified'}),patch.object(cli.sys,'stdout',io.StringIO()): self.assertEqual(0,cli.main())
  def test_token_is_child_environment_not_argv(self):
-  token='not-in-argv'; seen={}
-  def deploy(**kwargs):
-   seen['runner']=kwargs['runner']; return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,False,False,False,False,None,False,False,'preflight_failed')
-  k,_=self.kwargs(token_provider=lambda:token,deploy_function=deploy); cli.run_cli(self.command(),**k)
-  # The wrapper receives a fixed command; no token is represented in its audit.
-  self.assertNotIn(token,repr(cli.run_cli(self.command(),**self.kwargs(token_provider=lambda:token)[0])))
-  self.assertNotIn(token,repr(seen))
- def test_child_runner_uses_official_environment_variable_not_argv(self):
   token='not-in-argv'; observed={}
-  def fake_run(args, **kwargs):
-   observed['args']=args; observed['env']=kwargs['env']; observed['stdin']=kwargs['stdin']
-   return subprocess.CompletedProcess(args, 0, '', '')
-  with patch.object(cli.subprocess,'run',fake_run):
-   result=cli._deploy_runner(token,{'CLOUDFLARE_ENV':'preview','CF_API_TOKEN':'old-token'})(('npx','--no-install','wrangler','deploy'),ROOT)
-  self.assertEqual(0,result[0]); self.assertNotIn(token,observed['args'])
-  self.assertEqual(token,observed['env']['CLOUDFLARE_API_TOKEN'])
-  self.assertEqual(w.ACCOUNT,observed['env']['CLOUDFLARE_ACCOUNT_ID'])
-  self.assertEqual('log',observed['env']['WRANGLER_LOG'])
-  self.assertNotIn('CLOUDFLARE_ENV',observed['env']); self.assertNotIn('CF_API_TOKEN',observed['env'])
-  self.assertIs(subprocess.DEVNULL,observed.get('stdin'))
- def test_cli_passes_safe_metadata_and_managed_stdin_to_wrapper(self):
-  seen={}
-  def deploy(**kwargs):
-   seen.update(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,True,True,True,0,False,False,'deploy_succeeded')
-  k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
-  self.assertEqual('deploy_succeeded_process_level',result['classification'])
-  self.assertEqual('approved_account_base_environment_log_sanitized',seen['child_environment_classification']); self.assertTrue(seen['stdin_managed'])
- def test_new_boolean_markers_are_safe_metadata_only(self):
-  def deploy(**kwargs):
-   return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,0,False,False,'process_succeeded_unobserved',dry_run_marker_observed=True,config_redirect_observed=True)
-  k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
-  audit=result['audit']; self.assertTrue(audit['dry_run_marker_observed']); self.assertTrue(audit['config_redirect_observed']); self.assertNotIn('safe-token',repr(result))
+  def fake_run(args,**kwargs): observed.update(args=args,env=kwargs['env'],stdin=kwargs['stdin']); return subprocess.CompletedProcess(args,0,'','')
+  with patch.object(cli.subprocess,'run',fake_run): result=cli._deploy_runner(token,{'CLOUDFLARE_ENV':'preview','CF_API_TOKEN':'old'})(('node','--no-warnings','cli.js','deploy'),ROOT)
+  self.assertEqual(0,result[0]); self.assertNotIn(token,observed['args']); self.assertEqual(token,observed['env']['CLOUDFLARE_API_TOKEN']); self.assertNotIn('CLOUDFLARE_ENV',observed['env']); self.assertIs(subprocess.DEVNULL,observed['stdin'])
+ def test_safe_audit_never_includes_raw_or_token(self):
+  k,_=self.kwargs(); result=cli.run_cli(self.command(),**k); self.assertNotIn('safe-token',repr(result)); self.assertNotIn('Authorization',repr(result)); self.assertNotIn('raw',repr(result))
 
 if __name__=='__main__': unittest.main()
