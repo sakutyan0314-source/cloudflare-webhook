@@ -16,6 +16,11 @@ class T(unittest.TestCase):
   for out,expected in [('', 'deploy_failed_before_upload'),('Compiled Worker successfully','build_failed'),('Uploaded cloudflare-webhook','deploy_failed_after_upload')]:self.assertEqual(expected,self.execute(1,out)[0].classification)
  def test_exit_zero_without_confirmed_version_is_unknown(self):
   x,_=self.execute(0,'Compiled Worker successfully');self.assertEqual('process_succeeded_unobserved',x.classification)
+ def test_confirmation_classifications_are_safe_and_distinct(self):
+  self.assertEqual('deploy_confirmation_required',self.execute(1,'Would you like to continue?')[0].classification)
+  self.assertEqual('deploy_confirmation_declined_or_aborted',self.execute(0,'Would you like to continue?\nAborting deploy...')[0].classification)
+ def test_safe_execution_metadata(self):
+  x,_=self.execute(); self.assertEqual('fixed_npx_no_install_wrangler_deploy',x.argv_classification); self.assertEqual('repository_root',x.cwd_classification); self.assertEqual('repository_wrangler_toml',x.config_discovery_classification)
  def test_timeout_interrupt_start(self):self.assertEqual('process_timeout',self.execute(exc=TimeoutError())[0].classification);self.assertEqual('process_interrupted',self.execute(exc=KeyboardInterrupt())[0].classification);self.assertEqual('wrangler_start_failed',self.execute(exc=OSError())[0].classification)
  def test_preflight(self):
   x=w.run_deploy(root=ROOT,git_head='h',account='wrong',runner=lambda *_:(_ for _ in ()).throw(Exception()),version_getter=lambda:w.WRANGLER_VERSION);self.assertEqual('preflight_failed',x.classification)

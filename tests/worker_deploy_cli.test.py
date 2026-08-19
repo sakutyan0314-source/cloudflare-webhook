@@ -53,7 +53,7 @@ class WorkerDeployCliTest(unittest.TestCase):
  def test_child_runner_uses_official_environment_variable_not_argv(self):
   token='not-in-argv'; observed={}
   def fake_run(args, **kwargs):
-   observed['args']=args; observed['env']=kwargs['env']
+   observed['args']=args; observed['env']=kwargs['env']; observed['stdin']=kwargs['stdin']
    return subprocess.CompletedProcess(args, 0, '', '')
   with patch.object(cli.subprocess,'run',fake_run):
    result=cli._deploy_runner(token,{'CLOUDFLARE_ENV':'preview','CF_API_TOKEN':'old-token'})(('npx','--no-install','wrangler','deploy'),ROOT)
@@ -62,5 +62,13 @@ class WorkerDeployCliTest(unittest.TestCase):
   self.assertEqual(w.ACCOUNT,observed['env']['CLOUDFLARE_ACCOUNT_ID'])
   self.assertEqual('log',observed['env']['WRANGLER_LOG'])
   self.assertNotIn('CLOUDFLARE_ENV',observed['env']); self.assertNotIn('CF_API_TOKEN',observed['env'])
+  self.assertIs(subprocess.DEVNULL,observed.get('stdin'))
+ def test_cli_passes_safe_metadata_and_managed_stdin_to_wrapper(self):
+  seen={}
+  def deploy(**kwargs):
+   seen.update(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,True,True,True,0,False,False,'deploy_succeeded')
+  k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
+  self.assertEqual('deploy_succeeded_process_level',result['classification'])
+  self.assertEqual('approved_account_base_environment_log_sanitized',seen['child_environment_classification']); self.assertTrue(seen['stdin_managed'])
 
 if __name__=='__main__': unittest.main()

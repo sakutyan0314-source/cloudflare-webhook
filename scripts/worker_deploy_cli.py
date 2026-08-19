@@ -32,6 +32,11 @@ def _safe_result(classification: str, audit: DeployAudit | None = None) -> dict[
             "timed_out": audit.timed_out,
             "interrupted": audit.interrupted,
             "classification": audit.classification,
+            "argv_classification": audit.argv_classification,
+            "cwd_classification": audit.cwd_classification,
+            "config_discovery_classification": audit.config_discovery_classification,
+            "child_environment_classification": audit.child_environment_classification,
+            "stdin_managed": audit.stdin_managed,
         }
     return result
 
@@ -90,7 +95,7 @@ def _deploy_runner(token: str, parent_env: Mapping[str, str] | None = None) -> C
         for key in ("CLOUDFLARE_ENV", "CF_ACCOUNT_ID", "CF_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL", "CF_API_KEY", "CF_EMAIL"):
             env.pop(key, None)
         env.update({"CLOUDFLARE_API_TOKEN": token, "CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "WRANGLER_LOG": "log", "WRANGLER_LOG_SANITIZE": "true"})
-        completed = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=180, env=env)
+        completed = subprocess.run(args, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180, env=env)
         return completed.returncode, completed.stdout, completed.stderr
     return runner
 
@@ -156,6 +161,8 @@ def run_cli(
             account=args.expected_account,
             runner=_deploy_runner(token, parent_env),
             version_getter=lambda: version_getter(root) or "",
+            child_environment_classification="approved_account_base_environment_log_sanitized",
+            stdin_managed=True,
         )
     finally:
         token = ""
