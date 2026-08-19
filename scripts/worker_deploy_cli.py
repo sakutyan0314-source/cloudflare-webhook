@@ -37,6 +37,11 @@ def _safe_result(classification: str, audit: DeployAudit | None = None) -> dict[
             "config_discovery_classification": audit.config_discovery_classification,
             "child_environment_classification": audit.child_environment_classification,
             "stdin_managed": audit.stdin_managed,
+            "build_stage_classification": audit.build_stage_classification,
+            "dry_run_marker_observed": audit.dry_run_marker_observed,
+            "autoconfig_aborted_observed": audit.autoconfig_aborted_observed,
+            "opennext_delegation_observed": audit.opennext_delegation_observed,
+            "config_redirect_observed": audit.config_redirect_observed,
         }
     return result
 
@@ -176,8 +181,11 @@ def run_cli(
 def main() -> int:
     # Only a JSON-safe classification is written; raw Wrangler streams are
     # deliberately discarded inside the existing wrapper.
-    print(json.dumps(run_cli(sys.argv[1:]), sort_keys=True))
-    return 0
+    result = run_cli(sys.argv[1:])
+    print(json.dumps(result, sort_keys=True))
+    # A wrapper process can finish cleanly without an observable deployed
+    # version. Make that ambiguity visible to the invoking human or script.
+    return 2 if result["classification"] == "deploy_outcome_unknown" else 0
 
 
 if __name__ == "__main__":

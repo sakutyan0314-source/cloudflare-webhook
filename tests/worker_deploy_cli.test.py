@@ -1,4 +1,4 @@
-import importlib.util, pathlib, subprocess, sys, unittest
+import importlib.util, io, pathlib, subprocess, sys, unittest
 from unittest.mock import patch
 
 ROOT=pathlib.Path(__file__).parents[1]
@@ -42,6 +42,11 @@ class WorkerDeployCliTest(unittest.TestCase):
    calls.append(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,True,False,False,0,False,False,'process_succeeded_unobserved')
   k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
   self.assertEqual('deploy_outcome_unknown',result['classification']); self.assertEqual(1,len(calls))
+ def test_unknown_is_a_nonzero_outer_cli_exit(self):
+  with patch.object(cli, 'run_cli', return_value={'classification':'deploy_outcome_unknown'}), patch.object(cli.sys, 'stdout', io.StringIO()):
+   self.assertEqual(2,cli.main())
+  with patch.object(cli, 'run_cli', return_value={'classification':'deploy_succeeded_process_level'}), patch.object(cli.sys, 'stdout', io.StringIO()):
+   self.assertEqual(0,cli.main())
  def test_token_is_child_environment_not_argv(self):
   token='not-in-argv'; seen={}
   def deploy(**kwargs):
@@ -70,5 +75,10 @@ class WorkerDeployCliTest(unittest.TestCase):
   k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
   self.assertEqual('deploy_succeeded_process_level',result['classification'])
   self.assertEqual('approved_account_base_environment_log_sanitized',seen['child_environment_classification']); self.assertTrue(seen['stdin_managed'])
+ def test_new_boolean_markers_are_safe_metadata_only(self):
+  def deploy(**kwargs):
+   return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,0,False,False,'process_succeeded_unobserved',dry_run_marker_observed=True,config_redirect_observed=True)
+  k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
+  audit=result['audit']; self.assertTrue(audit['dry_run_marker_observed']); self.assertTrue(audit['config_redirect_observed']); self.assertNotIn('safe-token',repr(result))
 
 if __name__=='__main__': unittest.main()
