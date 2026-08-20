@@ -1,9 +1,10 @@
-# Master Blueprint v1.8
+# Master Blueprint v2.1
 
 ## ゼロキャピタル＆マルチエージェント型 自律ビジネス拡張システム
 
 **制定日:** 2026-08-09  
-**文書状態:** 正式基準文書 v1.8（reconciliation実装済み・本番反映済み・安定確認済み）
+**最終同期日:** 2026-08-20
+**文書状態:** 正式基準文書 v2.1（現在HEAD・本番確認済み状態・未反映状態を分離して記録）
 **対象プロジェクト:** `cloudflare-webhook` を第1号事業エンジンとする会社構想全体  
 **管理原則:** 本文書を会社構想・技術開発・AI運用の Single Source of Truth とする
 
@@ -71,6 +72,54 @@
 - D1データ削除、履歴書き換え、force push、認証・課金変更など重大操作は人間の明示確認を必須とする
 - 想定外の差分・対象環境・権限問題を検出したら停止し、勝手に復元・削除しない
 - シークレットをコード、ログ、設計図、Git履歴へ保存しない
+
+### 3.5 変更完了の必須工程
+
+機能・安全基盤・運用コード・schema・設定の変更は、規模にかかわらず次の順序で完了を判断する。
+
+1. コード変更
+2. migration変更（必要な場合のみ）
+3. ローカルテスト・構文・差分確認
+4. 本番影響確認（必要な場合はread-only preflight）
+5. `MASTER_BLUEPRINT.md` 更新
+6. 関連運用文書更新
+7. 意図したファイルだけをcommit・push
+
+設計書または関連運用文書の更新を省いた「実装完了」報告は禁止する。本番反映の有無は、Git commitやローカルテストではなく、Cloudflare/D1のread-only確認で区別する。
+
+## 3.6 2026-08-20時点の正規状態
+
+この節は、以降に残る旧versionの変更履歴より優先する。旧記録は経緯の証跡であり、現行設計または現行本番状態の根拠には使用しない。
+
+### 実装・Git
+
+- 正規HEADは、このv2.1同期commitを含む `main` とする。`main` と `origin/main` は同期済みであることを、commit/pushごとに確認する。
+- Worker entrypointは `src/index.ts`、Worker名は `cloudflare-webhook`、D1 bindingは `DB`、公開URLは `SITE_URL`、Cronは `0 23 * * *`（UTC、毎日08:00 JST）である。
+- package/lockfileでWrangler `4.120.0` をexact固定する。Worker deployは `npx` および `bin/wrangler.js` を通さず、repository内の `node_modules/wrangler/wrangler-dist/cli.js` をNodeから直接一回だけ起動する。
+- deploy CLIはAccount・Git HEAD・repository root・固定Wrangler・tracked working treeを事前検証する。tokenは子process環境の `CLOUDFLARE_API_TOKEN` にのみ渡し、argv・監査値・例外・出力へ保存しない。retry、fallback、自動redeploy、`--yes` は禁止する。
+- deploy監査では、**process result**（`failed_before_upload`、`failed_after_upload`、`signal_terminated`、`timeout`、`completed_with_version_marker`、`completed_without_version_marker`）と、**deployment outcome**（`succeeded`、`failed`、`unknown`、`not_attempted`）を分離する。Version ID marker、単一version、traffic 100%、PRE/POST version差を確認できた場合だけ outcome を `succeeded` とする。signal、timeout、marker欠落、upload後失敗、post-check不能、version不変、traffic不一致は fail-closed で `unknown` とする。
+- 過去のWorker deployがCloudflare上で新Versionを作成しなかった直接原因は `ROOT_CAUSE_NARROWED` のままである。最後に確認した本番Worker Versionは `723ce89c-81d0-4eb9-9825-769cd6bca66f`、trafficは単一version 100%であり、現行HEADとの差分は未反映である。Git保存を本番反映とみなさない。
+
+### D1 schema・監査・pipeline
+
+- 本番D1は `zero-capital-insight-db`（ID `99ef2162-afd8-459a-87eb-d197127528e2`）であり、migration `0001`〜`0009` が適用済みとして最後にread-only確認した。
+- `0007_quality_gate_audits.sql` は `quality_gate_audits`、`quality_gate_audit_checks`、`quality_gate_audit_reasons` と4 indexを追加する。通常pipelineは品質監査の永続保存成功前に記事保存へ進まない。`fail` は記事保存・Discordを行わず、`needs_review` は公開経路へ進めない。
+- `0008_production_executions.sql` は approved canary の single-use execution/event監査を追加する。`approved_canary` 以外のtrigger、状態逆行、`publication_authorized=1` は制約で拒否する。
+- `0009_publication_boundary.sql` は `content_staging_drafts`、`publication_executions`、`publication_execution_events` を追加する。draftは `curation_logs` と別tableであり、QualityGateAudit PASS、Production Execution成功、PublicationApproval、fingerprint一致、single-use publication executionをすべて満たすまで公開しない。
+- 通常pipelineは `running → saved → completed/failed`、通知は `pending → sending → sent/failed` を追跡する。`sending`、stale `running`、保存済み未通知は reconciliation の条件付き更新と人間確認で扱い、自動的な結果推測・重複通知は行わない。
+- `PRAGMA foreign_key_check = 0`、新規5 table空、`running/sending/reconciliation/unresolved outcome = 0` は、最後の本番read-only preflightで確認済みの時点情報である。以後の本番状態は都度read-onlyで再確認する。
+
+### SEO・公開・計測
+
+- SEO article foundationは title/description/body/category/published/updated/seo status、canonical、OGP、Twitter Card、Article JSON-LD、pagination、category、related articles、sitemap、robots、Search Console verification tagを含む。
+- 通常公開対象は `curation_logs` の公開可能な記事だけである。`content_staging_drafts` はトップ、category、pagination、sitemap、related articles、`/article/:id`、Discordに露出しない。
+- Search Consoleのsync/page/query観測tableとaffiliate click event tableはD1 schemaに存在する。分析・投入・外部API実行はそれぞれ個別の承認境界を持ち、通常Cronや記事公開へ自動接続しない。
+
+### internal canary route
+
+- `POST /internal/approved-canary` と `POST /internal/approved-canary/publication` は `OPERATIONS_API_TOKEN` のBearer認証、POST、JSON、16 KiB上限、未知field拒否、固定trigger、承認済みID群の完全性検証を要求する。制作入口では `pipeline_run_id` も正の安全整数として入口で検証する。
+- runtime dependencyが未設定なら503でfail-closedする。deployだけでAI、Production Execution、staging、publication、`curation_logs` 追加、Discordを開始しない。現時点ではruntime未接続のため、approved canary/publicationは本番実行可能と扱わない。
+- Cron `scheduled → runScheduledPipeline → runReliablePipeline`、手動pipeline、public GET routeとは完全に分離する。
 
 ## 4. 現在の事業モデル
 
@@ -175,7 +224,9 @@ Discordは外部Webhookであるため厳密なexactly-onceを保証しない。
 
 認証失敗は401、HTTPメソッド不正は405、Secret未設定時は保護経路のみ503とする。認証はHTTP `fetch` ルート層に限定し、scheduled handlerとCronから直接利用する共通処理には適用しない。公開SEOページは認証なしで公開を維持する。
 
-## 6. 2026-08-10時点の状態台帳
+## 6. 履歴状態台帳（2026-08-10時点の証跡）
+
+この節は当時の確認記録である。現行状態は「3.6 2026-08-20時点の正規状態」を使用する。
 
 ### 6.1 本番確認済み
 

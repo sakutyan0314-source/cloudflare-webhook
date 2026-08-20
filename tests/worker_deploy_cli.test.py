@@ -29,7 +29,7 @@ class WorkerDeployCliTest(unittest.TestCase):
   k,c=self.kwargs(); self.assertEqual('pre_deploy_version_required',cli.run_cli(self.command()[:-2],**k)['classification']); self.assertEqual([],c)
  def test_direct_cli_normal_exit_and_postcheck_new_version_succeeds_once(self):
   k,c=self.kwargs(); result=cli.run_cli(self.command(),**k)
-  self.assertEqual('deploy_succeeded_verified',result['classification']); self.assertEqual(1,len(c)); self.assertTrue(result['post_deploy_check']['version_changed']); self.assertNotIn('safe-token',repr(result))
+  self.assertEqual('deploy_succeeded_verified',result['classification']); self.assertEqual('succeeded',result['deployment_outcome']); self.assertEqual(1,len(c)); self.assertTrue(result['post_deploy_check']['version_changed']); self.assertNotIn('safe-token',repr(result))
  def test_direct_signal_exit_is_unknown_and_skips_postcheck(self):
   post=[]
   def deploy(**kwargs): return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,-15,False,False,'process_signal_terminated',signal_terminated=True)
@@ -51,9 +51,14 @@ class WorkerDeployCliTest(unittest.TestCase):
    calls=[]
    def deploy(**kwargs): calls.append(kwargs); return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,None,timed_out,interrupted,classification)
    k,_=self.kwargs(deploy_function=deploy); self.assertEqual(expected,cli.run_cli(self.command(),**k)['classification']); self.assertEqual(1,len(calls))
+ def test_before_upload_failure_has_known_failed_outcome(self):
+  def deploy(**kwargs): return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,1,False,False,'deploy_failed_before_upload',process_result='failed_before_upload')
+  k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
+  self.assertEqual('deploy_failed_before_upload',result['classification']); self.assertEqual('failed',result['deployment_outcome']); self.assertEqual('failed_before_upload',result['audit']['process_result'])
  def test_unknown_is_a_nonzero_outer_cli_exit(self):
   with patch.object(cli,'run_cli',return_value={'classification':'deploy_outcome_unknown'}),patch.object(cli.sys,'stdout',io.StringIO()): self.assertEqual(2,cli.main())
   with patch.object(cli,'run_cli',return_value={'classification':'deploy_succeeded_verified'}),patch.object(cli.sys,'stdout',io.StringIO()): self.assertEqual(0,cli.main())
+  with patch.object(cli,'run_cli',return_value={'classification':'deploy_failed_before_upload','deployment_outcome':'failed'}),patch.object(cli.sys,'stdout',io.StringIO()): self.assertEqual(2,cli.main())
  def test_token_is_child_environment_not_argv(self):
   token='not-in-argv'; observed={}
   def fake_run(args,**kwargs): observed.update(args=args,env=kwargs['env'],stdin=kwargs['stdin']); return subprocess.CompletedProcess(args,0,'','')

@@ -459,3 +459,13 @@ node scripts/v1.9.1-seo-backfill-dry-run.mjs \
 - pipeline、reconciliation、`notification_status='sending'`、Worker、Cron、Discord、migrationに変更はない。
 
 投入前にTime Travel bookmark、Git管理外export、SHA-256、権限600、隔離SQLite復元、0001〜0005と0005観測schema、初回idempotency key未使用を確認済みである。以後の再実行は同じidempotency keyでは冪等スキップとし、別期間の投入は個別承認を必要とする。
+
+## 26. 2026-08-20 現行schemaと変更完了ルール
+
+この節は現行運用状態を示し、旧来の「0001のみ」「0001〜0005のみ」といった手順中の当時の値より優先する。
+
+- 本番D1はmigration `0001`〜`0009` 適用済みとして最後にread-only確認した。`0007` はQualityGateAudit、`0008` はProduction Execution、`0009` はPublication Boundaryを追加する forward-only migration である。
+- `0008`/`0009` の追加tableは、Worker/runtime未接続の間は空であることが期待値である。migration適用だけで記事、draft、publication execution、Discord通知は作成しない。
+- migration `0007` 以降では、migrationを先に適用し、post-checkを完了してから、それを参照するWorkerをdeployする。新Workerを先にdeployして保存失敗による停止を起こさない。
+- schema、Worker、運用script、設計・安全境界を変更する作業は、コード、必要なmigration、テスト、本番影響確認、`MASTER_BLUEPRINT.md`、関連運用文書、意図したcommit/pushの順で完了を判断する。設計書を更新しない実装完了報告は禁止する。
+- 本節の本番状態は時点情報である。本番操作直前には、identity、migration ledger、schema、`foreign_key_check`、pipeline/reconciliation競合状態をread-onlyで再確認する。

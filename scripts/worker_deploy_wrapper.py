@@ -21,6 +21,9 @@ class DeployAudit:
  version_marker_observed:bool=False
  signal_terminated:bool=False
  error_classification:str='not_applicable'
+ # Process-local fact only. It intentionally says nothing about whether a
+ # Cloudflare Worker Version was ultimately created; that is a CLI post-check.
+ process_result:str='not_started'
 
 
 def _strip_ansi(value: str) -> str:
@@ -74,12 +77,12 @@ def run_deploy(*,root:Path,git_head:str,account:str,runner:Callable[[Sequence[st
  autoconfig_aborted=('Are you sure that you want to proceed?' in text and 'Using fallback value in non-interactive context: no' in text)
  opennext_delegation='OpenNext project detected, calling `opennextjs-cloudflare deploy`' in text
  config_redirect='Using redirected Wrangler configuration.' in text
- if code is not None and code<0: classification='process_signal_terminated'
- elif code==0 and response: classification='deploy_succeeded'
- elif deployment_aborted: classification='deploy_confirmation_declined_or_aborted'
- elif confirmation_prompt: classification='deploy_confirmation_required'
- elif code==0: classification='process_succeeded_unobserved'
- elif upload: classification='deploy_failed_after_upload'
- else: classification='deploy_failed_before_upload'
+ if code is not None and code<0: classification='process_signal_terminated'; process_result='signal_terminated'
+ elif code==0 and response: classification='deploy_succeeded'; process_result='completed_with_version_marker'
+ elif deployment_aborted: classification='deploy_confirmation_declined_or_aborted'; process_result='failed_before_upload'
+ elif confirmation_prompt: classification='deploy_confirmation_required'; process_result='failed_before_upload'
+ elif code==0: classification='process_succeeded_unobserved'; process_result='completed_without_version_marker'
+ elif upload: classification='deploy_failed_after_upload'; process_result='failed_after_upload'
+ else: classification='deploy_failed_before_upload'; process_result='failed_before_upload'
  error_classification='not_applicable' if code==0 or code is None or code<0 else _classify_error_stream(text)
- return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,build,upload,response,code,False,False,classification,*meta,'build_stage_unknown',dry_run,autoconfig_aborted,opennext_delegation,config_redirect,response,code is not None and code<0,error_classification)
+ return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,build,upload,response,code,False,False,classification,*meta,'build_stage_unknown',dry_run,autoconfig_aborted,opennext_delegation,config_redirect,response,code is not None and code<0,error_classification,process_result)

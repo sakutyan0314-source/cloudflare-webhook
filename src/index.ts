@@ -219,7 +219,7 @@ async function handleApprovedCanaryRequest(request, env) {
   if (accessError) return accessError;
   try {
     const payload = await parseInternalJsonRequest(request, new Set(["trigger_type", "production_input_id", "approval_id", "production_execution_id", "pipeline_run_id"]));
-    if (payload.trigger_type !== "approved_canary" || !["production_input_id", "approval_id", "production_execution_id"].every((key) => typeof payload[key] === "string" && payload[key])) throw new Error("request_invalid");
+    if (payload.trigger_type !== "approved_canary" || Object.keys(payload).length !== 5 || !["production_input_id", "approval_id", "production_execution_id"].every((key) => typeof payload[key] === "string" && payload[key]) || !Number.isSafeInteger(payload.pipeline_run_id) || payload.pipeline_run_id < 1) throw new Error("request_invalid");
     const runtime = env?.APPROVED_CANARY_RUNTIME;
     if (!runtime || typeof runtime.resolve !== "function") return internalError("canary_runtime_unavailable", 503);
     const resolved = await runtime.resolve(payload);

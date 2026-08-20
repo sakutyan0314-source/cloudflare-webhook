@@ -9,7 +9,7 @@ class T(unittest.TestCase):
    if exc: raise exc
    return code,out,err
   x=w.run_deploy(root=ROOT,git_head='h',account=w.ACCOUNT,runner=f,version_getter=lambda:w.WRANGLER_VERSION);return x,calls
- def test_success_and_one_attempt(self):x,c=self.execute();self.assertEqual('deploy_succeeded',x.classification);self.assertEqual(1,len(c));self.assertNotIn('Deployed',repr(x))
+ def test_success_and_one_attempt(self):x,c=self.execute();self.assertEqual('deploy_succeeded',x.classification);self.assertEqual('completed_with_version_marker',x.process_result);self.assertEqual(1,len(c));self.assertNotIn('Deployed',repr(x))
  def test_wrangler_4_120_markers_and_stages(self):
   self.assertEqual('deploy_succeeded',self.execute(0,'Uploaded cloudflare-webhook\nCurrent Version ID: x')[0].classification)
   self.assertEqual('deploy_succeeded',self.execute(0,'Uploaded cloudflare-webhook\nWorker Version ID: x')[0].classification)
@@ -19,7 +19,7 @@ class T(unittest.TestCase):
   self.assertFalse(x.build_stage_observed); self.assertEqual('build_stage_unknown',x.build_stage_classification)
   self.assertFalse(x.upload_stage_observed); self.assertEqual('deploy_failed_before_upload',x.classification)
  def test_exit_zero_without_confirmed_version_is_unknown(self):
-  x,_=self.execute(0,'Compiled Worker successfully');self.assertEqual('process_succeeded_unobserved',x.classification);self.assertEqual('build_stage_unknown',x.build_stage_classification)
+  x,_=self.execute(0,'Compiled Worker successfully');self.assertEqual('process_succeeded_unobserved',x.classification);self.assertEqual('completed_without_version_marker',x.process_result);self.assertEqual('build_stage_unknown',x.build_stage_classification)
  def test_confirmation_classifications_are_safe_and_distinct(self):
   self.assertEqual('deploy_confirmation_required',self.execute(1,'Would you like to continue?')[0].classification)
   self.assertEqual('deploy_confirmation_declined_or_aborted',self.execute(0,'Would you like to continue?\nAborting deploy...')[0].classification)
@@ -33,7 +33,10 @@ class T(unittest.TestCase):
  def test_safe_execution_metadata(self):
   x,c=self.execute(); self.assertEqual('fixed_node_local_wrangler_cli_deploy',x.argv_classification); self.assertEqual(('node','--no-warnings',str(ROOT/w.WRANGLER_CLI_RELATIVE_PATH),'deploy'),c[0]); self.assertEqual('repository_root',x.cwd_classification); self.assertEqual('repository_wrangler_toml',x.config_discovery_classification)
  def test_direct_cli_signal_is_never_a_success(self):
-  x,_=self.execute(-15,''); self.assertTrue(x.signal_terminated); self.assertEqual('process_signal_terminated',x.classification)
+  x,_=self.execute(-15,''); self.assertTrue(x.signal_terminated); self.assertEqual('process_signal_terminated',x.classification); self.assertEqual('signal_terminated',x.process_result)
+ def test_process_result_separates_before_and_after_upload_failures(self):
+  self.assertEqual('failed_before_upload',self.execute(1,'')[0].process_result)
+  self.assertEqual('failed_after_upload',self.execute(1,'Uploaded cloudflare-webhook')[0].process_result)
  def test_nonzero_error_families_are_classified_without_retaining_streams(self):
   cases=(
    ('EPERM: operation not permitted','filesystem_permission_error'),

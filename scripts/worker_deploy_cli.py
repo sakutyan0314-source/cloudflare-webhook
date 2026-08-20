@@ -23,8 +23,19 @@ from worker_deployment_diagnostics import DeploymentShapeError, LatestDeployment
 ROOT = Path(__file__).parents[1].resolve()
 
 
+def _deployment_outcome(classification: str) -> str:
+    """Separate remote deployment evidence from the local process result."""
+    if classification == "deploy_succeeded_verified":
+        return "succeeded"
+    if classification in {"deploy_failed_before_upload", "deploy_confirmation_required", "deploy_confirmation_declined_or_aborted"}:
+        return "failed"
+    if classification.startswith(("preflight_", "git_", "account_", "wrangler_", "repository_", "filesystem_", "worker_token_", "deploy_command_")):
+        return "not_attempted"
+    return "unknown"
+
+
 def _safe_result(classification: str, audit: DeployAudit | None = None, postcheck: Mapping[str, object] | None = None) -> dict[str, object]:
-    result: dict[str, object] = {"classification": classification}
+    result: dict[str, object] = {"classification": classification, "deployment_outcome": _deployment_outcome(classification)}
     if audit is not None:
         result["audit"] = {
             "process_started": audit.process_started,
@@ -48,6 +59,7 @@ def _safe_result(classification: str, audit: DeployAudit | None = None, postchec
             "version_marker_observed": audit.version_marker_observed,
             "signal_terminated": audit.signal_terminated,
             "error_classification": audit.error_classification,
+            "process_result": audit.process_result,
         }
     if postcheck is not None:
         result["post_deploy_check"] = dict(postcheck)
@@ -222,7 +234,8 @@ def main() -> int:
     print(json.dumps(result, sort_keys=True))
     # A wrapper process can finish cleanly without an observable deployed
     # version. Make that ambiguity visible to the invoking human or script.
-    return 2 if result["classification"] == "deploy_outcome_unknown" else 0
+    outcome = result.get("deployment_outcome", _deployment_outcome(str(result.get("classification", ""))))
+    return 0 if outcome == "succeeded" else 2
 
 
 if __name__ == "__main__":
