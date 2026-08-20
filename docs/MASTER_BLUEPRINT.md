@@ -130,6 +130,7 @@
 - Phase 2F-1は、approved SEO Execution Approval、Execution Candidate、最新read-only snapshotから、`seo-improvement-execution-preflight-v1`のゼロ書込みpreflight snapshotを純粋関数で生成する。Approval/TTL/single-use/stale/final diffを完全照合し、`changed_db=false`、`rows_written=0`、`execution_authorized=false`を固定する。conditional UPDATE、D1保存、実行、publicationは行わない。
 - Phase 2F-2.1は、検証済みSEO Execution Preflightから`seo-improvement-execution-attempt-v1`のimmutable attempt fact、post-verification schema、rollback candidateを純粋関数で生成する。状態遷移はforward-onlyで、実行結果不明は`outcome_unknown`として停止する。いずれもD1 transaction・conditional UPDATE・rollback execution・publicationを実装しない。
 - Phase 2F-3.1は、`0010_seo_execution_transactions.sql`でSEO Attempt、append-only event、post-verificationの専用tableを追加し、ローカルSQLite専用repositoryでApproval reservation、CAS state transition、event保存、post-verification保存を検証する。conditional UPDATEはtitle/descriptionのSQL構成とRETURNING監査だけで、Worker/D1 transport・実記事更新・publication・deployには接続しない。
+- Phase 2F-7は、production未接続のread adapter、fixed-SQL write builder、read-only preflight/dry-run、manual-only operator boundaryを追加する。すべて注入mock transportまたはpure inputだけを扱い、token source・D1 write transport・Worker/Cron入口・実記事更新を持たない。
 
 ### internal canary route
 
