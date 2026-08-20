@@ -47,6 +47,7 @@ def _safe_result(classification: str, audit: DeployAudit | None = None, postchec
             "config_redirect_observed": audit.config_redirect_observed,
             "version_marker_observed": audit.version_marker_observed,
             "signal_terminated": audit.signal_terminated,
+            "error_classification": audit.error_classification,
         }
     if postcheck is not None:
         result["post_deploy_check"] = dict(postcheck)

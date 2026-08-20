@@ -20,11 +20,31 @@ class DeployAudit:
  config_redirect_observed:bool=False
  version_marker_observed:bool=False
  signal_terminated:bool=False
+ error_classification:str='not_applicable'
 
 
 def _strip_ansi(value: str) -> str:
  """Use process output only for in-memory fixed-marker checks."""
  return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+def _classify_error_stream(value:str)->str:
+ """Classify approved error families in memory; never retain the stream."""
+ text=value.lower()
+ patterns=(
+  ('filesystem_permission_error',('eperm','eacces','permission denied','failed to write to log file','read-only file system')),
+  ('authentication_error',('authentication error','not authenticated','invalid api token','api token is invalid','unauthorized')),
+  ('account_error',('account id','account configuration','could not find account','account is required')),
+  ('config_error',('wrangler.toml','wrangler.json','configuration file','configuration error','must provide a name')),
+  ('module_resolution_error',('could not resolve','module not found','cannot find module','failed to resolve module')),
+  ('typescript_or_syntax_error',('typescript error','syntax error','unexpected token','tsconfig')),
+  ('compatibility_error',('compatibility_date','compatibility date','compatibility flag')),
+  ('build_error',('build failed','esbuild','failed to build','build error')),
+  ('network_error',('network error','fetch failed','econnrefused','enotfound','etimedout','socket hang up')),
+  ('api_error',('cloudflare api','api request failed','api error','error code:')),
+  ('wrangler_internal_error',('wrangler internal error','internal error','unexpected wrangler error')),
+ )
+ for classification,markers in patterns:
+  if any(marker in text for marker in markers):return classification
+ return 'unknown_preupload_error'
 def run_deploy(*,root:Path,git_head:str,account:str,runner:Callable[[Sequence[str],Path],tuple[int,str,str]],version_getter:Callable[[],str],timeout_seconds:int=180,child_environment_classification:str='not_asserted',stdin_managed:bool=False)->DeployAudit:
  meta=( 'fixed_node_local_wrangler_cli_deploy','repository_root','repository_wrangler_toml' if (root/'wrangler.toml').is_file() else 'config_discovery_unknown',child_environment_classification,stdin_managed)
  if root.resolve()!=Path(__file__).parents[1].resolve() or account!=ACCOUNT:return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,account,False,False,False,False,None,False,False,'preflight_failed',*meta)
@@ -61,4 +81,5 @@ def run_deploy(*,root:Path,git_head:str,account:str,runner:Callable[[Sequence[st
  elif code==0: classification='process_succeeded_unobserved'
  elif upload: classification='deploy_failed_after_upload'
  else: classification='deploy_failed_before_upload'
- return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,build,upload,response,code,False,False,classification,*meta,'build_stage_unknown',dry_run,autoconfig_aborted,opennext_delegation,config_redirect,response,code is not None and code<0)
+ error_classification='not_applicable' if code==0 or code is None or code<0 else _classify_error_stream(text)
+ return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,build,upload,response,code,False,False,classification,*meta,'build_stage_unknown',dry_run,autoconfig_aborted,opennext_delegation,config_redirect,response,code is not None and code<0,error_classification)

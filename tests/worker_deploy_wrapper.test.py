@@ -34,6 +34,24 @@ class T(unittest.TestCase):
   x,c=self.execute(); self.assertEqual('fixed_node_local_wrangler_cli_deploy',x.argv_classification); self.assertEqual(('node','--no-warnings',str(ROOT/w.WRANGLER_CLI_RELATIVE_PATH),'deploy'),c[0]); self.assertEqual('repository_root',x.cwd_classification); self.assertEqual('repository_wrangler_toml',x.config_discovery_classification)
  def test_direct_cli_signal_is_never_a_success(self):
   x,_=self.execute(-15,''); self.assertTrue(x.signal_terminated); self.assertEqual('process_signal_terminated',x.classification)
+ def test_nonzero_error_families_are_classified_without_retaining_streams(self):
+  cases=(
+   ('EPERM: operation not permitted','filesystem_permission_error'),
+   ('Authentication error: invalid API token','authentication_error'),
+   ('Account ID is required','account_error'),
+   ('wrangler.toml configuration error','config_error'),
+   ('Could not resolve module ./missing','module_resolution_error'),
+   ('Syntax error in entrypoint','typescript_or_syntax_error'),
+   ('compatibility_date is required','compatibility_error'),
+   ('Build failed with esbuild','build_error'),
+   ('fetch failed: ENOTFOUND','network_error'),
+   ('Cloudflare API request failed','api_error'),
+   ('Wrangler internal error','wrangler_internal_error'),
+   ('unrecognised failure token=not-retained','unknown_preupload_error'),
+  )
+  for stream,expected in cases:
+   with self.subTest(expected=expected):
+    x,_=self.execute(1,stream); self.assertEqual(expected,x.error_classification); self.assertNotIn('not-retained',repr(x))
  def test_timeout_interrupt_start(self):
   self.assertEqual('process_timeout',self.execute(exc=TimeoutError())[0].classification)
   self.assertEqual('process_timeout',self.execute(exc=__import__('subprocess').TimeoutExpired(('node',),180))[0].classification)

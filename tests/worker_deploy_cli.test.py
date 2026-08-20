@@ -61,5 +61,9 @@ class WorkerDeployCliTest(unittest.TestCase):
   self.assertEqual(0,result[0]); self.assertNotIn(token,observed['args']); self.assertEqual(token,observed['env']['CLOUDFLARE_API_TOKEN']); self.assertNotIn('CLOUDFLARE_ENV',observed['env']); self.assertIs(subprocess.DEVNULL,observed['stdin'])
  def test_safe_audit_never_includes_raw_or_token(self):
   k,_=self.kwargs(); result=cli.run_cli(self.command(),**k); self.assertNotIn('safe-token',repr(result)); self.assertNotIn('Authorization',repr(result)); self.assertNotIn('raw',repr(result))
+ def test_safe_error_classification_is_exposed_without_error_stream(self):
+  def deploy(**kwargs): return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,1,False,False,'deploy_failed_before_upload',error_classification='filesystem_permission_error')
+  k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
+  self.assertEqual('filesystem_permission_error',result['audit']['error_classification']); self.assertNotIn('secret',repr(result))
 
 if __name__=='__main__': unittest.main()
