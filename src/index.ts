@@ -1761,13 +1761,16 @@ function renderHomePage(results, options) {
     const article = readSeoArticle(row);
     const dateStr = new Date(article.publishedAt).toLocaleString("ja-JP");
     const articleUrl = `/article/${escapeHtml(String(article.id))}`;
+    const categoryHtml = isPublicCategory(article.category)
+      ? `<a class="category" href="${escapeHtml(categoryUrl(siteUrl, article.category))}">${escapeHtml(categoryLabel(article.category))}</a>`
+      : `<span class="category">${escapeHtml(categoryLabel(article.category))}</span>`;
 
     return `
           <article class="post">
             <h2><a href="${articleUrl}">${escapeHtml(article.title)}</a></h2>
             <div class="meta">
               <span>公開日時: ${escapeHtml(dateStr)}</span>
-              <span class="category">${escapeHtml(categoryLabel(article.category))}</span>
+              ${categoryHtml}
             </div>
             <p class="excerpt">${escapeHtml(article.description)}</p>
             <div class="read-more">

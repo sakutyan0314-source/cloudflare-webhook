@@ -76,6 +76,18 @@ await test("empty and uncategorized category routes are non-public", async () =>
   }
 });
 
+await test("home links only public category labels to their existing category pages", async () => {
+  const response = await worker.fetch(new Request("https://local.test/"), env, {});
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(html, /<a class="category" href="https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/category\/ai-automation">AI・自動化<\/a>/);
+  assert.match(html, /<a class="category" href="https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/category\/saas-cloud">SaaS・クラウド<\/a>/);
+  assert.match(html, /<span class="category">その他<\/span>/);
+  assert.doesNotMatch(html, /category\/uncategorized/);
+  assert.doesNotMatch(html, /確認待ち/);
+  assert.match(html, /href="\/article\/17">自律駆動型エンタープライズ<\/a>/);
+});
+
 await test("ready article has category breadcrumb, BreadcrumbList, and same-category related link", async () => {
   const response = await worker.fetch(new Request("https://local.test/article/17"), env, {});
   const html = await response.text();
