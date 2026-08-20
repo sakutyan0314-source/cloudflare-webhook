@@ -103,7 +103,7 @@
 
 ### D1 schema・監査・pipeline
 
-- 本番D1は `zero-capital-insight-db`（ID `99ef2162-afd8-459a-87eb-d197127528e2`）であり、migration `0001`〜`0009` が適用済みとして最後にread-only確認した。
+- 本番D1は `zero-capital-insight-db`（ID `99ef2162-afd8-459a-87eb-d197127528e2`）であり、migration `0001`〜`0010` が適用済みである。`0010_seo_execution_transactions.sql`はExecution Attempt/Event/Post Verificationの専用table・index・append-only triggerだけを追加し、適用後にFK check 0、新規3 table空、authorization flag違反0を確認した。記事変更、Attempt開始、Approval消費、Worker/Cron/deployは行っていない。
 - `0007_quality_gate_audits.sql` は `quality_gate_audits`、`quality_gate_audit_checks`、`quality_gate_audit_reasons` と4 indexを追加する。通常pipelineは品質監査の永続保存成功前に記事保存へ進まない。`fail` は記事保存・Discordを行わず、`needs_review` は公開経路へ進めない。
 - `0008_production_executions.sql` は approved canary の single-use execution/event監査を追加する。`approved_canary` 以外のtrigger、状態逆行、`publication_authorized=1` は制約で拒否する。
 - `0009_publication_boundary.sql` は `content_staging_drafts`、`publication_executions`、`publication_execution_events` を追加する。draftは `curation_logs` と別tableであり、QualityGateAudit PASS、Production Execution成功、PublicationApproval、fingerprint一致、single-use publication executionをすべて満たすまで公開しない。
@@ -133,6 +133,7 @@
 - Phase 2F-7は、production未接続のread adapter、fixed-SQL write builder、read-only preflight/dry-run、manual-only operator boundaryを追加する。すべて注入mock transportまたはpure inputだけを扱い、token source・D1 write transport・Worker/Cron入口・実記事更新を持たない。
 - Phase 2F-8は、`0010`未適用状態のread-only migration preflight、target identity、fixed write-SQL whitelist、zero-write dry-run report、operator preflight orchestrationを追加する。production binding・migration apply・D1 write・Worker/Cron接続は含めない。
 - Phase 2F-9は、`0010`のSHA-256、target identity、backup/bookmark/export証跡、FK/schema preflightを検証し、`dry_run_only=true`かつ`apply_authorized=false`固定のmigration apply checklistを生成する。migration apply・D1 write・Worker/Cron接続は含めない。
+- Phase 2F-10では、承認済み`0010_seo_execution_transactions.sql`を本番D1へ一度だけ適用した。migration record ID 10、3 table、index、2 append-only trigger、FK check、新規table空、authorization flag違反0をread-only post-checkで確認した。Execution adapterは未接続であり、記事変更・Attempt・Approval消費・publication・Worker/Cron/deployは実施していない。
 
 ### internal canary route
 
