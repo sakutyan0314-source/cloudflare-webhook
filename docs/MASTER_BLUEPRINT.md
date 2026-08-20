@@ -95,11 +95,11 @@
 
 - 正規HEADは、このv2.1同期commitを含む `main` とする。`main` と `origin/main` は同期済みであることを、commit/pushごとに確認する。
 - Worker entrypointは `src/index.ts`、Worker名は `cloudflare-webhook`、D1 bindingは `DB`、公開URLは `SITE_URL`、Cronは `0 23 * * *`（UTC、毎日08:00 JST）である。
-- package/lockfileでWrangler `4.120.0` をexact固定する。Worker deployは `npx` および `bin/wrangler.js` を通さず、repository内の `node_modules/wrangler/wrangler-dist/cli.js` をNodeから直接一回だけ起動する。
+- package/lockfileでWrangler `4.120.0` をexact固定する。Worker deployは `npx` および `bin/wrangler.js` を通さず、repository内の `node_modules/wrangler/wrangler-dist/cli.js` をNodeから直接一回だけ起動し、必ず `--config ./wrangler.toml` を渡す。
 - deploy CLIはAccount・Git HEAD・repository root・固定Wrangler・tracked working treeを事前検証する。tokenは子process環境の `CLOUDFLARE_API_TOKEN` にのみ渡し、argv・監査値・例外・出力へ保存しない。retry、fallback、自動redeploy、`--yes` は禁止する。
 - deploy監査では、**process result**（`failed_before_upload`、`failed_after_upload`、`signal_terminated`、`timeout`、`completed_with_version_marker`、`completed_without_version_marker`）と、**deployment outcome**（`succeeded`、`failed`、`unknown`、`not_attempted`）を分離する。Version ID marker、単一version、traffic 100%、PRE/POST version差を確認できた場合だけ outcome を `succeeded` とする。signal、timeout、marker欠落、upload後失敗、post-check不能、version不変、traffic不一致は fail-closed で `unknown` とする。
 - deployの非0終了ではraw stdout/stderrを保存せず、許可リスト化した `error_classification`、`error_stage`、Cloudflare numeric error code、OS error name、固定 `error_summary` だけを出力できる。分類不能時も `unknown_preupload_error` / `preupload_unknown` / `unclassified_preupload_failure` として停止し、本文を出力しない。
-- 過去の `unknown_preupload_error` の直接原因は未確定であり、`ROOT_CAUSE_NARROWED` を維持する。今回追加したものは、次回の非0終了時に安全な固定診断値を取得する能力であって、過去原因の解決または本番deploy成功を意味しない。最後に確認した本番Worker Versionは `723ce89c-81d0-4eb9-9825-769cd6bca66f`、trafficは単一version 100%であり、現行HEADとの差分は未反映である。Git保存を本番反映とみなさない。
+- `unknown_preupload_error` の直接原因は確定済みである。Wrangler 4.120.0は親ディレクトリ `/Users/hashimotoyuma/wrangler.jsonc` を優先解決し、その `assets.directory = "."` によりホームディレクトリ全体をAsset manifestとして再帰走査してpreupload OOMを発生させた。`scripts/worker_deploy_wrapper.py` は `--config ./wrangler.toml` を明示し、通常bundle経路の `deploy --dry-run` がOOMなしで完走することを確認済みである。この修正はWorkerコード・binding・D1 schemaを変更しないためmigrationは不要である。最後に確認した本番Worker Versionは `723ce89c-81d0-4eb9-9825-769cd6bca66f`、trafficは単一version 100%であり、現行HEADとの差分は未反映である。Git保存を本番反映とみなさない。
 
 ### D1 schema・監査・pipeline
 

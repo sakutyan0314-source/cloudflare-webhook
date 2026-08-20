@@ -31,7 +31,7 @@ class T(unittest.TestCase):
   x,_=self.execute(0,'OpenNext project detected, calling `opennextjs-cloudflare deploy`\nUsing redirected Wrangler configuration.')
   self.assertTrue(x.opennext_delegation_observed); self.assertTrue(x.config_redirect_observed)
  def test_safe_execution_metadata(self):
-  x,c=self.execute(); self.assertEqual('fixed_node_local_wrangler_cli_deploy',x.argv_classification); self.assertEqual(('node','--no-warnings',str(ROOT/w.WRANGLER_CLI_RELATIVE_PATH),'deploy'),c[0]); self.assertEqual('repository_root',x.cwd_classification); self.assertEqual('repository_wrangler_toml',x.config_discovery_classification)
+  x,c=self.execute(); self.assertEqual('fixed_node_local_wrangler_cli_deploy',x.argv_classification); self.assertEqual(('node','--no-warnings',str(ROOT/w.WRANGLER_CLI_RELATIVE_PATH),'deploy','--config','./wrangler.toml'),c[0]); self.assertEqual('repository_root',x.cwd_classification); self.assertEqual('repository_wrangler_toml',x.config_discovery_classification)
  def test_direct_cli_signal_is_never_a_success(self):
   x,_=self.execute(-15,''); self.assertTrue(x.signal_terminated); self.assertEqual('process_signal_terminated',x.classification); self.assertEqual('signal_terminated',x.process_result)
  def test_process_result_separates_before_and_after_upload_failures(self):

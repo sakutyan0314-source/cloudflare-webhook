@@ -65,7 +65,7 @@ def run_deploy(*,root:Path,git_head:str,account:str,runner:Callable[[Sequence[st
  try:
   # Use the pinned CLI entrypoint directly. bin/wrangler.js converts a
   # signalled inner process (code=None) to an outer exit status of 0.
-  code,out,err=runner(('node','--no-warnings',str(cli_entrypoint),'deploy'),root)
+  code,out,err=runner(('node','--no-warnings',str(cli_entrypoint),'deploy','--config','./wrangler.toml'),root)
  except (TimeoutError,subprocess.TimeoutExpired):return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,False,False,False,None,True,False,'process_timeout',*meta)
  except KeyboardInterrupt:return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,True,False,False,False,None,False,True,'process_interrupted',*meta)
  except OSError:return DeployAudit('worker-deploy-audit-v1',git_head,SCRIPT,ACCOUNT,False,False,False,False,None,False,False,'wrangler_start_failed',*meta)
