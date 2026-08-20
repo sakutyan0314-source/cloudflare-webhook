@@ -98,7 +98,8 @@
 - package/lockfileでWrangler `4.120.0` をexact固定する。Worker deployは `npx` および `bin/wrangler.js` を通さず、repository内の `node_modules/wrangler/wrangler-dist/cli.js` をNodeから直接一回だけ起動する。
 - deploy CLIはAccount・Git HEAD・repository root・固定Wrangler・tracked working treeを事前検証する。tokenは子process環境の `CLOUDFLARE_API_TOKEN` にのみ渡し、argv・監査値・例外・出力へ保存しない。retry、fallback、自動redeploy、`--yes` は禁止する。
 - deploy監査では、**process result**（`failed_before_upload`、`failed_after_upload`、`signal_terminated`、`timeout`、`completed_with_version_marker`、`completed_without_version_marker`）と、**deployment outcome**（`succeeded`、`failed`、`unknown`、`not_attempted`）を分離する。Version ID marker、単一version、traffic 100%、PRE/POST version差を確認できた場合だけ outcome を `succeeded` とする。signal、timeout、marker欠落、upload後失敗、post-check不能、version不変、traffic不一致は fail-closed で `unknown` とする。
-- 過去のWorker deployがCloudflare上で新Versionを作成しなかった直接原因は `ROOT_CAUSE_NARROWED` のままである。最後に確認した本番Worker Versionは `723ce89c-81d0-4eb9-9825-769cd6bca66f`、trafficは単一version 100%であり、現行HEADとの差分は未反映である。Git保存を本番反映とみなさない。
+- deployの非0終了ではraw stdout/stderrを保存せず、許可リスト化した `error_classification`、`error_stage`、Cloudflare numeric error code、OS error name、固定 `error_summary` だけを出力できる。分類不能時も `unknown_preupload_error` / `preupload_unknown` / `unclassified_preupload_failure` として停止し、本文を出力しない。
+- 過去の `unknown_preupload_error` の直接原因は未確定であり、`ROOT_CAUSE_NARROWED` を維持する。今回追加したものは、次回の非0終了時に安全な固定診断値を取得する能力であって、過去原因の解決または本番deploy成功を意味しない。最後に確認した本番Worker Versionは `723ce89c-81d0-4eb9-9825-769cd6bca66f`、trafficは単一version 100%であり、現行HEADとの差分は未反映である。Git保存を本番反映とみなさない。
 
 ### D1 schema・監査・pipeline
 

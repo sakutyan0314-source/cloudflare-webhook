@@ -59,6 +59,10 @@ def _safe_result(classification: str, audit: DeployAudit | None = None, postchec
             "version_marker_observed": audit.version_marker_observed,
             "signal_terminated": audit.signal_terminated,
             "error_classification": audit.error_classification,
+            "error_stage": audit.error_stage,
+            "error_code": audit.error_code,
+            "error_name": audit.error_name,
+            "error_summary": audit.error_summary,
             "process_result": audit.process_result,
         }
     if postcheck is not None:

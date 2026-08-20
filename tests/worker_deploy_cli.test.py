@@ -67,8 +67,9 @@ class WorkerDeployCliTest(unittest.TestCase):
  def test_safe_audit_never_includes_raw_or_token(self):
   k,_=self.kwargs(); result=cli.run_cli(self.command(),**k); self.assertNotIn('safe-token',repr(result)); self.assertNotIn('Authorization',repr(result)); self.assertNotIn('raw',repr(result))
  def test_safe_error_classification_is_exposed_without_error_stream(self):
-  def deploy(**kwargs): return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,1,False,False,'deploy_failed_before_upload',error_classification='filesystem_permission_error')
+  def deploy(**kwargs): return w.DeployAudit('v',HEAD,w.SCRIPT,w.ACCOUNT,True,False,False,False,1,False,False,'deploy_failed_before_upload',error_classification='filesystem_permission_error',error_stage='wrangler_runtime',error_code='10001',error_name='EPERM',error_summary='filesystem_permission_failure')
   k,_=self.kwargs(deploy_function=deploy); result=cli.run_cli(self.command(),**k)
   self.assertEqual('filesystem_permission_error',result['audit']['error_classification']); self.assertNotIn('secret',repr(result))
+  self.assertEqual(('wrangler_runtime','10001','EPERM','filesystem_permission_failure'),(result['audit']['error_stage'],result['audit']['error_code'],result['audit']['error_name'],result['audit']['error_summary']))
 
 if __name__=='__main__': unittest.main()

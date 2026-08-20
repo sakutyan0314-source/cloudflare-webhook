@@ -55,6 +55,12 @@ class T(unittest.TestCase):
   for stream,expected in cases:
    with self.subTest(expected=expected):
     x,_=self.execute(1,stream); self.assertEqual(expected,x.error_classification); self.assertNotIn('not-retained',repr(x))
+ def test_safe_error_details_are_stage_bound_and_allowlisted(self):
+  x,_=self.execute(1,'EPERM: operation not permitted; Error Code: 10001; token=never-retained')
+  self.assertEqual(('filesystem_permission_error','wrangler_runtime','10001','EPERM','filesystem_permission_failure'),(x.error_classification,x.error_stage,x.error_code,x.error_name,x.error_summary))
+  self.assertNotIn('never-retained',repr(x))
+  x,_=self.execute(1,'unclassified message secret=never-retained')
+  self.assertEqual(('unknown_preupload_error','preupload_unknown',None,None,'unclassified_preupload_failure'),(x.error_classification,x.error_stage,x.error_code,x.error_name,x.error_summary))
  def test_timeout_interrupt_start(self):
   self.assertEqual('process_timeout',self.execute(exc=TimeoutError())[0].classification)
   self.assertEqual('process_timeout',self.execute(exc=__import__('subprocess').TimeoutExpired(('node',),180))[0].classification)
