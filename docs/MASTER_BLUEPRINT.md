@@ -125,6 +125,7 @@
 - Phase 2C-2.1は、検証済みChange Plan snapshotから`seo-improvement-change-plan-review-record-v1`のappend-only review chainを純粋関数で生成する。statusは`pending_review`、`accepted`、`rejected`、`deferred`のみで、acceptedは将来のChange Candidate作成候補という人間判断に限る。記事変更・publication・executionの権限は常にfalseである。
 - Phase 2D-1は、最新statusがacceptedのChange Plan review chainとread-only article snapshotから、`snippet`のtitle/description候補だけを含む`seo-improvement-change-candidate-v1`を生成する。本文全文・body変更・SQL・D1 update・実行/公開権限は含めず、before snapshotの本文はSHA-256だけで表す。
 - Phase 2D-2.1は、検証済みChange Candidate snapshotから`seo-improvement-change-candidate-review-record-v1`のappend-only review chainを純粋関数で生成する。statusは`pending_review`、`accepted`、`rejected`、`deferred`のみで、acceptedは将来のExecution Candidate作成候補という人間判断に限る。記事変更・publication・executionの権限は常にfalseである。
+- Phase 2E-1は、最新statusがacceptedのChange Candidate review chainから、`snippet`のtitle/description差分だけを含む`seo-improvement-execution-candidate-v1`の実行前固定snapshotを純粋関数で生成する。before/after snapshotとexpected diffはcanonical SHA-256で固定し、最新read-only snapshotとの完全一致を要求する。Execution Approval、記事変更、D1 write、publication、executionの権限は含めない。
 
 ### internal canary route
 
