@@ -122,6 +122,7 @@
 - Phase 2B-2は、Phase 2B-1 inputを固定OpenAI/Terra (`gpt-5.6-terra`) の単発Responses API adapterへ渡し、structured JSON出力を`seo-improvement-proposal-v1`として再構成・検証する。retry/fallback/toolsなし、`store=false`、timeoutとtoken上限を固定する。proposal保存、記事変更、publication、Worker接続は行わない。
 - Phase 2B-3.1は、検証済み`seo-improvement-proposal-v1`を対象にcanonical proposal全体の完全SHA-256 fingerprintと`seo-improvement-proposal-review-record-v1`のappend-only review chainを純粋関数で扱う。statusは`pending_review`、`accepted`、`rejected`、`deferred`のみで、記事変更・publication・executionの権限は常にfalseである。
 - Phase 2C-1は、最新statusがacceptedのproposal review chainと一致するproposalから、抽象的な`change_units`と固定のSearch Console検証計画だけを含む`seo-improvement-change-plan-v1`を生成する。planは`pending_review` snapshotであり、記事変更・publication・executionの権限は常にfalseである。
+- Phase 2C-2.1は、検証済みChange Plan snapshotから`seo-improvement-change-plan-review-record-v1`のappend-only review chainを純粋関数で生成する。statusは`pending_review`、`accepted`、`rejected`、`deferred`のみで、acceptedは将来のChange Candidate作成候補という人間判断に限る。記事変更・publication・executionの権限は常にfalseである。
 
 ### internal canary route
 
