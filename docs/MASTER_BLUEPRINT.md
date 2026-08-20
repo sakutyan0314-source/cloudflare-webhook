@@ -137,6 +137,7 @@
 - Phase 2F-11は、適用済み`0010`、target identity、Candidate/Approval/Preflight/stale/expected diff、fixed SQL whitelistを確認するread-only first-execution dry-run runnerを追加する。reportは`changed_db=false`、`rows_written=0`、Approval未消費に固定し、D1 write・記事変更・Attempt INSERTを行わない。
 - Phase 2F-12は、Search Console review envelopeからSEO review、proposal、各review、Change Plan、Change Candidate、Execution Candidate、Approvalまでのsource identityとappend-only accepted chainを再構成して検証し、fresh preflightを生成する。qualification reportはゼロ書込み・Approval未消費に固定する。
 - Phase 2F-13は、注入されたoperator-only transportだけを使う単一article/snippetのcontrolled execution runnerを追加する。明示`execute=True`、final qualification、Approval reservation、forward-only audit transition、conditional UPDATEのRETURNING監査、post-verificationを要求し、失敗時にretry・Approval再利用・自動rollbackを行わない。production transportやcredential sourceは未接続である。
+- Phase 2F-14は、production read adapterの固定SELECTだけでtarget D1 identity、`0010` table、Approval reservation不在、最新snapshot、full accepted chain、TTL/single-use、fresh preflight、title/description allowlistを確認するsanitized readiness reportを追加する。D1 write・記事変更・Approval消費は行わない。
 
 ### internal canary route
 
