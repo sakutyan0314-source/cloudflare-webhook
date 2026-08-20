@@ -134,6 +134,7 @@
 - Phase 2F-8は、`0010`未適用状態のread-only migration preflight、target identity、fixed write-SQL whitelist、zero-write dry-run report、operator preflight orchestrationを追加する。production binding・migration apply・D1 write・Worker/Cron接続は含めない。
 - Phase 2F-9は、`0010`のSHA-256、target identity、backup/bookmark/export証跡、FK/schema preflightを検証し、`dry_run_only=true`かつ`apply_authorized=false`固定のmigration apply checklistを生成する。migration apply・D1 write・Worker/Cron接続は含めない。
 - Phase 2F-10では、承認済み`0010_seo_execution_transactions.sql`を本番D1へ一度だけ適用した。migration record ID 10、3 table、index、2 append-only trigger、FK check、新規table空、authorization flag違反0をread-only post-checkで確認した。Execution adapterは未接続であり、記事変更・Attempt・Approval消費・publication・Worker/Cron/deployは実施していない。
+- Phase 2F-11は、適用済み`0010`、target identity、Candidate/Approval/Preflight/stale/expected diff、fixed SQL whitelistを確認するread-only first-execution dry-run runnerを追加する。reportは`changed_db=false`、`rows_written=0`、Approval未消費に固定し、D1 write・記事変更・Attempt INSERTを行わない。
 
 ### internal canary route
 
