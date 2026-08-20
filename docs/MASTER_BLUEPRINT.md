@@ -132,6 +132,7 @@
 - Phase 2F-3.1は、`0010_seo_execution_transactions.sql`でSEO Attempt、append-only event、post-verificationの専用tableを追加し、ローカルSQLite専用repositoryでApproval reservation、CAS state transition、event保存、post-verification保存を検証する。conditional UPDATEはtitle/descriptionのSQL構成とRETURNING監査だけで、Worker/D1 transport・実記事更新・publication・deployには接続しない。
 - Phase 2F-7は、production未接続のread adapter、fixed-SQL write builder、read-only preflight/dry-run、manual-only operator boundaryを追加する。すべて注入mock transportまたはpure inputだけを扱い、token source・D1 write transport・Worker/Cron入口・実記事更新を持たない。
 - Phase 2F-8は、`0010`未適用状態のread-only migration preflight、target identity、fixed write-SQL whitelist、zero-write dry-run report、operator preflight orchestrationを追加する。production binding・migration apply・D1 write・Worker/Cron接続は含めない。
+- Phase 2F-9は、`0010`のSHA-256、target identity、backup/bookmark/export証跡、FK/schema preflightを検証し、`dry_run_only=true`かつ`apply_authorized=false`固定のmigration apply checklistを生成する。migration apply・D1 write・Worker/Cron接続は含めない。
 
 ### internal canary route
 
