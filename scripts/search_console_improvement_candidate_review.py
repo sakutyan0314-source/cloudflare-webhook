@@ -21,6 +21,7 @@ _KNOWN_CANDIDATES = {
     "clicks_and_impressions_declined": "refresh_content",
     "impressions_with_zero_clicks": "improve_snippet",
 }
+KNOWN_CANDIDATE_REASON_CODES = frozenset(_KNOWN_CANDIDATES)
 _METRIC_FIELDS = ("clicks", "impressions", "ctr", "position")
 _DELTA_FIELDS = ("clicks_delta", "impressions_delta", "ctr_delta", "position_delta")
 

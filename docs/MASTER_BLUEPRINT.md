@@ -117,6 +117,7 @@
 - Search Consoleのsync/page/query観測tableとaffiliate click event tableはD1 schemaに存在する。分析・投入・外部API実行はそれぞれ個別の承認境界を持ち、通常Cronや記事公開へ自動接続しない。
 - Phase 2Aの改善候補抽出は、ready記事に紐付く`page_daily`を直近・前回の各7日でread-only比較し、十分性を満たす固定reason codeだけを人間確認用の候補一覧へ出力する。AI呼び出し、候補保存、記事変更、publicationは行わない。
 - Phase 2A.5は、Phase 2A候補と既存のready記事metadataをread-onlyで結合し、`phase-2a-improvement-candidate-review-v1`の`pending_review` envelopeへ正規化する。`recommendation_type`は上位分類`seo_review`、詳細根拠は固定`reason_code`で表す。status変更・候補保存・AI呼び出し・記事変更・publicationは行わない。
+- Phase 2A.6は、Phase 2A.5 envelopeから`seo-improvement-review-record-v1`のappend-only review recordを純粋関数で生成する。statusは`pending_review`、`accepted`、`rejected`、`deferred`のみで、acceptedは将来の改善案生成候補という人間判断に限る。D1保存、AI実行、記事変更、publication、deployの権限は与えない。
 
 ### internal canary route
 
