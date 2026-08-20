@@ -128,6 +128,7 @@
 - Phase 2E-1は、最新statusがacceptedのChange Candidate review chainから、`snippet`のtitle/description差分だけを含む`seo-improvement-execution-candidate-v1`の実行前固定snapshotを純粋関数で生成する。before/after snapshotとexpected diffはcanonical SHA-256で固定し、最新read-only snapshotとの完全一致を要求する。Execution Approval、記事変更、D1 write、publication、executionの権限は含めない。
 - Phase 2E-2.1は、検証済みSEO Execution Candidateから`seo-improvement-execution-approval-v1`のimmutable approval recordを純粋関数で生成する。承認は30分以内・single-use・全source identity一致・最新read-only snapshot一致を要求し、使用済みIDの検証は呼出側から渡された集合だけで行う。Approval自体は記事変更・publication・executionの権限を与えない。
 - Phase 2F-1は、approved SEO Execution Approval、Execution Candidate、最新read-only snapshotから、`seo-improvement-execution-preflight-v1`のゼロ書込みpreflight snapshotを純粋関数で生成する。Approval/TTL/single-use/stale/final diffを完全照合し、`changed_db=false`、`rows_written=0`、`execution_authorized=false`を固定する。conditional UPDATE、D1保存、実行、publicationは行わない。
+- Phase 2F-2.1は、検証済みSEO Execution Preflightから`seo-improvement-execution-attempt-v1`のimmutable attempt fact、post-verification schema、rollback candidateを純粋関数で生成する。状態遷移はforward-onlyで、実行結果不明は`outcome_unknown`として停止する。いずれもD1 transaction・conditional UPDATE・rollback execution・publicationを実装しない。
 
 ### internal canary route
 
