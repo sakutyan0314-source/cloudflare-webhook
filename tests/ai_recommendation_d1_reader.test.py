@@ -9,7 +9,7 @@ class Transport:
 def reply(changed=False,written=0):return {'success':True,'result':[{'meta':{'changed_db':changed,'rows_written':written},'results':[]} for _ in range(3)]}
 class ReaderTest(unittest.TestCase):
  def test_exactly_three_fixed_selects(self):
-  transport=Transport(reply());reader.AiRecommendationD1Reader(transport).fetch_source('https://example.test/','web','2026-08-08','2026-08-09');batch=transport.calls[0][2]['batch'];self.assertEqual(3,len(batch));self.assertTrue(all(item['sql'].lstrip().upper().startswith('SELECT ') and ';' not in item['sql'] for item in batch));self.assertNotIn('content',batch[2]['sql'].lower());self.assertIn("url_kind='article'",batch[0]['sql']);self.assertIn('article_id IS NOT NULL',batch[0]['sql'])
+  transport=Transport(reply());reader.AiRecommendationD1Reader(transport).fetch_source('https://example.test/','web','2026-08-08','2026-08-09');batch=transport.calls[0][2]['batch'];self.assertEqual(3,len(batch));self.assertTrue(all(item['sql'].lstrip().upper().startswith('SELECT ') and ';' not in item['sql'] for item in batch));self.assertNotIn('content',batch[2]['sql'].lower());self.assertIn('seo_status',batch[2]['sql']);self.assertIn("url_kind='article'",batch[0]['sql']);self.assertIn('article_id IS NOT NULL',batch[0]['sql'])
  def test_article_only_sql_covers_mixed_top_null_and_empty_cases(self):
   statement=reader.build_recommendation_source_selects('https://example.test/','web','2026-08-08','2026-08-09')[0]
   # These source shapes are intentionally filtered by SQL, not silently by

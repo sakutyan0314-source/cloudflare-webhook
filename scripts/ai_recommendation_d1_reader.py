@@ -52,7 +52,7 @@ def build_recommendation_source_selects(
             (f"{current_start.isoformat()}T00:00:00.000Z", f"{end_exclusive.isoformat()}T00:00:00.000Z"),
         ),
         SqlStatement(
-            """SELECT id AS article_id, title, description, category, published_at, updated_at
+            """SELECT id AS article_id, title, description, category, published_at, updated_at, seo_status
                  FROM curation_logs
                  WHERE seo_status='ready'
                  ORDER BY id ASC""",

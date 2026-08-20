@@ -115,6 +115,7 @@
 - SEO article foundationは title/description/body/category/published/updated/seo status、canonical、OGP、Twitter Card、Article JSON-LD、pagination、category、related articles、sitemap、robots、Search Console verification tagを含む。
 - 通常公開対象は `curation_logs` の公開可能な記事だけである。`content_staging_drafts` はトップ、category、pagination、sitemap、related articles、`/article/:id`、Discordに露出しない。
 - Search Consoleのsync/page/query観測tableとaffiliate click event tableはD1 schemaに存在する。分析・投入・外部API実行はそれぞれ個別の承認境界を持ち、通常Cronや記事公開へ自動接続しない。
+- Phase 2Aの改善候補抽出は、ready記事に紐付く`page_daily`を直近・前回の各7日でread-only比較し、十分性を満たす固定reason codeだけを人間確認用の候補一覧へ出力する。AI呼び出し、候補保存、記事変更、publicationは行わない。
 
 ### internal canary route
 
