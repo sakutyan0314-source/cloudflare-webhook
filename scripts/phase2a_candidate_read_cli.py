@@ -132,7 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--current-period-end", required=True, help="Latest confirmed Search Console date (YYYY-MM-DD)")
     args = parser.parse_args(argv)
     try:
-        listing = build_candidate_listing(WranglerFixedSelectTransport(), args.property_uri, args.current_period_end)
+        listing = build_candidate_listing(AiRecommendationD1Reader(WranglerFixedSelectTransport()), args.property_uri, args.current_period_end)
     except (Phase2ACandidateReadError, D1ReadSafetyError, ValueError):
         print(json.dumps({"schema_version": CLI_SCHEMA_VERSION, "status": "fail", "error_class": "read_only_candidate_listing_failed"}))
         return 1

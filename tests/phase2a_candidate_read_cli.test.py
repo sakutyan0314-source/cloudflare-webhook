@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import pathlib
 import sys
 import unittest
+from contextlib import redirect_stdout
 
 ROOT = pathlib.Path(__file__).parents[1]
 def load(name):
@@ -30,5 +32,16 @@ class TestPhase2ACandidateReadCli(unittest.TestCase):
         with self.assertRaises(cli.Phase2ACandidateReadError): transport.request("POST", "/query", {"batch": [{"sql": "DELETE FROM curation_logs", "params": []}] * 3})
     def test_fixed_parameter_rendering_escapes_values(self):
         self.assertEqual("SELECT 'a''b'", cli._render_fixed_select("SELECT ?", ["a'b"]))
+    def test_cli_wraps_transport_in_existing_phase2a_reader(self):
+        original_reader, original_transport = cli.AiRecommendationD1Reader, cli.WranglerFixedSelectTransport
+        output = io.StringIO()
+        try:
+            cli.AiRecommendationD1Reader = lambda transport: Reader()
+            cli.WranglerFixedSelectTransport = lambda: object()
+            with redirect_stdout(output):
+                self.assertEqual(0, cli.main(["--property-uri", "https://example.test/", "--current-period-end", "2026-08-14"]))
+            self.assertIn('"status":"pass"', output.getvalue())
+        finally:
+            cli.AiRecommendationD1Reader, cli.WranglerFixedSelectTransport = original_reader, original_transport
 
 if __name__ == "__main__": unittest.main()
