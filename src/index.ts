@@ -1756,6 +1756,7 @@ async function handleExistingPipelineRun(env, run, specification, runtime = {}) 
 }
 
 async function runReliablePipeline(env, specification, runtime = {}) {
+  const topicAwareGeminiInstruction = await resolveTopicAwareGeminiInstruction(specification);
   const acquisition = await acquirePipelineRun(env.DB, specification, runtime);
   const pipelineRuntime = pipelineDeadlineRuntime(runtime, acquisition.run.started_at);
   if (!acquisition.acquired) {
@@ -1766,7 +1767,9 @@ async function runReliablePipeline(env, specification, runtime = {}) {
   let stage = "gemini";
   try {
     await updateRunStage(env.DB, run.id, "gemini", pipelineRuntime);
-    const draft = await callGemini(env.GEMINI_API_KEY, pipelineRuntime);
+    const draft = await callGemini(env.GEMINI_API_KEY, topicAwareGeminiInstruction
+      ? { ...pipelineRuntime, geminiInstruction: topicAwareGeminiInstruction }
+      : pipelineRuntime);
     stage = "claude";
     await updateRunStage(env.DB, run.id, stage, pipelineRuntime);
     const reviewed = await callClaude(env.CLAUDE_API_KEY, draft, pipelineRuntime);
@@ -1788,6 +1791,20 @@ async function runReliablePipeline(env, specification, runtime = {}) {
     const existingArticle = await getArticleForRun(env.DB, run.id);
     if (!existingArticle) await markPipelineFailed(env.DB, run.id, error, stage, pipelineRuntime);
     throw normalizeOperationError(error, stage, stage === "d1_save" ? "d1" : stage);
+  }
+}
+
+async function resolveTopicAwareGeminiInstruction(specification) {
+  if (!Object.prototype.hasOwnProperty.call(specification, "topicAwareBrief")) return null;
+  try {
+    const { buildApprovedCanaryGeminiInstruction } = await import("./approved_canary_worker_adapter.js");
+    return buildApprovedCanaryGeminiInstruction(specification.topicAwareBrief);
+  } catch {
+    throw new OperationError({
+      stage: "pipeline_acquire",
+      provider: "worker",
+      errorCode: "topic_aware_input_invalid"
+    });
   }
 }
 

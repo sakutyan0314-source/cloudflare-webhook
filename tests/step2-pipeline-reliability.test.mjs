@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { PipelineD1Mock } from "./helpers/pipeline-d1-mock.mjs";
 
-const source = await fs.readFile(new URL("../src/index.ts", import.meta.url), "utf8");
+const canarySource = await fs.readFile(new URL("../src/approved_canary_worker_adapter.js", import.meta.url), "utf8");
+const source = (await fs.readFile(new URL("../src/index.ts", import.meta.url), "utf8"))
+  .replaceAll('"./approved_canary_worker_adapter.js"', `"data:text/javascript;base64,${Buffer.from(canarySource).toString("base64")}"`);
 const exportedSource = `${source}\nexport {
   acquirePipelineRun,
   callGemini,
@@ -251,6 +253,40 @@ await test("same manual key does not run LLM twice", async () => {
   assert.equal(second.outcome, "completed");
   assert.equal(harness.calls.length, callsAfterFirst);
   assert.equal(harness.db.state.articles.length, 1);
+});
+
+await test("approved topic-aware brief reaches Gemini while retaining the existing pipeline and single-use idempotency", async () => {
+  const harness = createHarness();
+  const specification = {
+    ...manualSpecification("topic:production-input-1"),
+    sourceType: "approved_topic_candidate",
+    topicAwareBrief: {
+      production_input_id: "production-input-1", topic_candidate_id: "topic-1", human_review_id: "review-1",
+      topic: "生成AIのガバナンス", title_hint: "生成AIガバナンスの実践", primary_intent: "how",
+      target_audience: "事業責任者", problem_to_solve: "導入統制", cluster_id: "ai-automation",
+      internal_link_guidance: { suggested_parent_article_id: 26, suggested_sibling_article_ids: [17], suggested_child_article_ids: [] },
+      ai_generation_authorized: false, publication_authorized: false, execution_authorized: false
+    }
+  };
+  const originalFetch = harness.runtime.fetch;
+  let geminiBody = "";
+  harness.runtime.fetch = async (url, init) => {
+    if (url.includes("googleapis")) geminiBody = init.body;
+    return originalFetch(url, init);
+  };
+  const first = await runReliablePipeline(harness.env, specification, harness.runtime);
+  const providerCalls = harness.calls.length;
+  const second = await runReliablePipeline(harness.env, specification, harness.runtime);
+  assert.equal(first.outcome, "completed"); assert.equal(second.outcome, "completed");
+  assert.match(geminiBody, /生成AIのガバナンス/); assert.match(geminiBody, /検索意図: how/);
+  assert.equal(harness.calls.length, providerCalls); assert.equal(harness.db.state.articles.length, 1);
+  assert.equal(harness.qualityGateAudits.length, 1);
+});
+
+await test("invalid topic-aware brief fails before pipeline acquisition or Gemini", async () => {
+  const harness = createHarness();
+  await assert.rejects(runReliablePipeline(harness.env, { ...manualSpecification("invalid-topic"), topicAwareBrief: { topic: "not-approved" } }, harness.runtime), (error) => error.errorCode === "topic_aware_input_invalid");
+  assert.equal(harness.db.state.pipelineRuns.length, 0); assert.equal(harness.calls.length, 0);
 });
 
 await test("quality gate saves a ready SEO article with separated fields", async () => {
