@@ -114,6 +114,7 @@
 
 - SEO article foundationは title/description/body/category/published/updated/seo status、canonical、OGP、Twitter Card、Article JSON-LD、pagination、category、related articles、`/archive`、sitemap、robots、Search Console verification tagを含む。
 - `/archive` は公開可能な記事だけを公開日時の新しい順に表示する恒久的な内部リンクハブである。各記事と公開categoryへリンクし、本文全文は出力しない。canonical、pagination、BreadcrumbListを持ち、sitemapとトップページのナビゲーションから発見できる。
+- `/archive` はcommit `e2cd91df02d7e22a2b0022b52124d89855f906ef` をWorker Version `d42d7036-16c4-41f6-bfda-f8f99f0caa33` として本番反映済みである。single Version 100% traffic、`/archive` HTTP 200、canonical、BreadcrumbList、記事・公開category内部リンク、トップ導線、sitemap掲載、既存top/article/categoryのread-only verificationはすべてPASSであり、D1 write・migrationは行っていない。
 - 通常公開対象は `curation_logs` の公開可能な記事だけである。`content_staging_drafts` はトップ、category、pagination、sitemap、related articles、`/article/:id`、Discordに露出しない。
 - Search Consoleのsync/page/query観測tableとaffiliate click event tableはD1 schemaに存在する。分析・投入・外部API実行はそれぞれ個別の承認境界を持ち、通常Cronや記事公開へ自動接続しない。
 - Phase 2Aの改善候補抽出は、ready記事に紐付く`page_daily`を直近・前回の各7日でread-only比較し、十分性を満たす固定reason codeだけを人間確認用の候補一覧へ出力する。AI呼び出し、候補保存、記事変更、publicationは行わない。
