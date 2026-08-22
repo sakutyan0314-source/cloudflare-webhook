@@ -139,6 +139,7 @@
 - Phase 2F-13は、注入されたoperator-only transportだけを使う単一article/snippetのcontrolled execution runnerを追加する。明示`execute=True`、final qualification、Approval reservation、forward-only audit transition、conditional UPDATEのRETURNING監査、post-verificationを要求し、失敗時にretry・Approval再利用・自動rollbackを行わない。production transportやcredential sourceは未接続である。
 - Phase 2F-14は、production read adapterの固定SELECTだけでtarget D1 identity、`0010` table、Approval reservation不在、最新snapshot、full accepted chain、TTL/single-use、fresh preflight、title/description allowlistを確認するsanitized readiness reportを追加する。D1 write・記事変更・Approval消費は行わない。
 - Phase 2F-15の候補選定は、通常Macの既存Wrangler認証からPhase 2A/2A.5の固定SELECTを実行する`phase2a_candidate_read_cli.py`で行う。出力はarticle ID、title、category、recommendation type、reason code、current metrics、candidate fingerprintだけで、D1 write・Approval・execution・記事変更を含まない。
+- Phase 2Fのproduction execution infrastructureはreadyだが、初回executionは十分なSearch Console evidence待ちである。2026-08-12〜19のscheduled `page_daily` syncはproperty URI・`web`・`["date","page"]`・`succeeded`・error summaryなしで完走した一方、rows received/savedは各0だった。同期障害・property修正・syncコード修正・backfill・Phase 2A閾値緩和は不要であり、十分な連続観測が得られるまでFirst Controlled Production Executionを保留する。
 
 ### internal canary route
 
