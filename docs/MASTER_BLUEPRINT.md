@@ -107,6 +107,7 @@
 - `0007_quality_gate_audits.sql` は `quality_gate_audits`、`quality_gate_audit_checks`、`quality_gate_audit_reasons` と4 indexを追加する。通常pipelineは品質監査の永続保存成功前に記事保存へ進まない。`fail` は記事保存・Discordを行わず、`needs_review` は公開経路へ進めない。
 - `0008_production_executions.sql` は approved canary の single-use execution/event監査を追加する。`approved_canary` 以外のtrigger、状態逆行、`publication_authorized=1` は制約で拒否する。
 - `0009_publication_boundary.sql` は `content_staging_drafts`、`publication_executions`、`publication_execution_events` を追加する。draftは `curation_logs` と別tableであり、QualityGateAudit PASS、Production Execution成功、PublicationApproval、fingerprint一致、single-use publication executionをすべて満たすまで公開しない。
+- `0011_approved_content_authorization_bundles.sql` は、既存Topic Candidate / human review / approved planning / content handoff / approved production input / Content Production Approvalの**content-free immutable snapshot**を1 tableへ保存するための未適用migrationである。production inputとapprovalはUNIQUEであり、本文・AI出力・Secret・tokenは保存しない。Workerの`/internal/approved-canary`はbundleを固定SELECTで復元し、snapshot fingerprint、identity、review decision、expiry、single-use、および`production_executions`未使用をGemini前に検証する。bundleなし・期限切れ・改ざん・既存実行はfail-closedとし、Cronはこの経路を起動しない。
 - 通常pipelineは `running → saved → completed/failed`、通知は `pending → sending → sent/failed` を追跡する。`sending`、stale `running`、保存済み未通知は reconciliation の条件付き更新と人間確認で扱い、自動的な結果推測・重複通知は行わない。
 - `PRAGMA foreign_key_check = 0`、新規5 table空、`running/sending/reconciliation/unresolved outcome = 0` は、最後の本番read-only preflightで確認済みの時点情報である。以後の本番状態は都度read-onlyで再確認する。
 

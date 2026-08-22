@@ -223,12 +223,17 @@ async function handleApprovedCanaryRequest(request, env) {
   try {
     const payload = await parseInternalJsonRequest(request, new Set(["trigger_type", "production_input_id", "approval_id", "production_execution_id", "pipeline_run_id"]));
     if (payload.trigger_type !== "approved_canary" || Object.keys(payload).length !== 5 || !["production_input_id", "approval_id", "production_execution_id"].every((key) => typeof payload[key] === "string" && payload[key]) || !Number.isSafeInteger(payload.pipeline_run_id) || payload.pipeline_run_id < 1) throw new Error("request_invalid");
-    const runtime = env?.APPROVED_CANARY_RUNTIME;
-    if (!runtime || typeof runtime.resolve !== "function") return internalError("canary_runtime_unavailable", 503);
-    const resolved = await runtime.resolve(payload);
-    const { runApprovedCanaryWorker } = await import("./approved_canary_worker_adapter.js");
-    const result = await runApprovedCanaryWorker({ ...resolved, request: resolved.request, authorize: async () => {}, validate: resolved.validate });
-    return new Response(JSON.stringify({ status: "accepted", execution_classification: result?.state || "accepted" }), { status: 202, headers: PRIVATE_JSON_HEADERS });
+    const { resolveApprovedCanaryBundle, reserveApprovedCanary, finalizeApprovedCanary, recordApprovedCanaryOutcomeUnknown } = await import("./approved_content_authorization_bundle_runtime.js");
+    const resolved = await resolveApprovedCanaryBundle(env.DB, payload);
+    await reserveApprovedCanary(env.DB, resolved, new Date().toISOString());
+    try {
+      const result = await runReliablePipeline(env, resolved.specification);
+      const execution = await finalizeApprovedCanary(env.DB, resolved, { result, occurredAt: new Date().toISOString() });
+      return new Response(JSON.stringify({ status: "accepted", pipeline_run_id: execution.pipelineRunId, article_id: execution.articleId }), { status: 202, headers: PRIVATE_JSON_HEADERS });
+    } catch (error) {
+      try { await recordApprovedCanaryOutcomeUnknown(env.DB, resolved, new Date().toISOString()); } catch {}
+      throw error;
+    }
   } catch { return internalError("approved_canary_request_rejected"); }
 }
 
