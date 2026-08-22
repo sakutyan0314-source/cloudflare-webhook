@@ -86,6 +86,23 @@ await test("home links only public category labels to their existing category pa
   assert.doesNotMatch(html, /category\/uncategorized/);
   assert.doesNotMatch(html, /確認待ち/);
   assert.match(html, /href="\/article\/17">自律駆動型エンタープライズ<\/a>/);
+  assert.match(html, /<a href="\/archive">記事アーカイブ<\/a>/);
+});
+
+await test("archive is a newest-first public article hub with SEO metadata and breadcrumbs", async () => {
+  const response = await worker.fetch(new Request("https://local.test/archive"), env, {});
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(html, /canonical" href="https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/archive"/);
+  assert.match(html, /<meta name="description" content="公開済みの記事を新着順で一覧できるアーカイブです。">/);
+  assert.match(html, /BreadcrumbList/);
+  assert.match(html, /href="\/article\/26">Agentic Mesh<\/a>/);
+  assert.match(html, /href="\/article\/17">自律駆動型エンタープライズ<\/a>/);
+  assert.ok(html.indexOf("Agentic Mesh") < html.indexOf("自律駆動型エンタープライズ"));
+  assert.match(html, /<time datetime="2026-08-09T20:40:17\.892Z">公開日時:/);
+  assert.match(html, /href="https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/category\/ai-automation">AI・自動化<\/a>/);
+  assert.match(html, /<span class="category">その他<\/span>/);
+  assert.doesNotMatch(html, /category\/uncategorized|確認待ち|本文です。/);
 });
 
 await test("ready article has category breadcrumb, BreadcrumbList, and same-category related link", async () => {
@@ -115,6 +132,7 @@ await test("sitemap adds only non-empty editorial category URLs with max updated
   assert.equal(response.status, 200);
   assert.match(xml, /<loc>https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/category\/ai-automation<\/loc>\n    <lastmod>2026-08-10T15:27:33\.000Z<\/lastmod>/);
   assert.match(xml, /<loc>https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/category\/saas-cloud<\/loc>/);
+  assert.match(xml, /<loc>https:\/\/cloudflare-webhook\.tyansaku3325\.workers\.dev\/archive<\/loc>/);
   assert.doesNotMatch(xml, /category\/uncategorized|category\/marketing-cx|article\/31/);
 });
 

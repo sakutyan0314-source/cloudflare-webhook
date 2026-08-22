@@ -62,6 +62,9 @@ export default {
     if (url.pathname === "/" || url.pathname === "") {
       return handleHomePage(env, url);
     }
+    if (url.pathname === "/archive") {
+      return handleArchivePage(env, url);
+    }
     if (url.pathname === "/sitemap.xml") {
   return handleSitemap(env);
 }
@@ -682,6 +685,10 @@ function sortArticlesByUpdatedAt(articles) {
   return [...articles].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
 }
 
+function sortArticlesByPublishedAt(articles) {
+  return [...articles].sort((left, right) => Date.parse(right.publishedAt) - Date.parse(left.publishedAt));
+}
+
 function categoryArticles(rows, category) {
   return sortArticlesByUpdatedAt(
     (rows ?? []).map((row) => readSeoArticle(row)).filter((article) =>
@@ -772,6 +779,56 @@ async function handleCategoryPage(env, category) {
     return new Response(html, { headers: HTML_HEADERS });
   } catch (error) {
     logOperationFailure(error, "category_page", "worker");
+    return new Response("記事の読み込み中にエラーが発生しました。", { status: 500, headers: TEXT_HEADERS });
+  }
+}
+
+async function handleArchivePage(env, url) {
+  try {
+    const siteUrl = getSiteUrl(env);
+    const pageParam = Number.parseInt(url.searchParams.get("page") || "1", 10);
+    const currentPage = Number.isNaN(pageParam) || pageParam < 1 ? 1 : pageParam;
+    const perPage = 5;
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM curation_logs ORDER BY id DESC LIMIT 1000"
+    ).all();
+    const publicArticles = sortArticlesByPublishedAt(
+      (results ?? []).map((row) => readSeoArticle(row)).filter(isPublicArticle)
+    );
+    const totalPages = Math.ceil(publicArticles.length / perPage) || 1;
+    if (currentPage > totalPages) return nonPublicArticleResponse();
+    const articles = publicArticles.slice((currentPage - 1) * perPage, currentPage * perPage);
+    const canonicalUrl = currentPage === 1 ? `${siteUrl}/archive` : `${siteUrl}/archive?page=${currentPage}`;
+    const pageSuffix = currentPage === 1 ? "" : ` | ${currentPage}ページ目`;
+    const pageTitle = `記事アーカイブ${pageSuffix} | テクノロジー＆ビジネストレンド最速まとめ速報`;
+    const description = `公開済みの記事を新着順で一覧できるアーカイブです。${currentPage === 1 ? "" : `現在は${currentPage}ページ目です。`}`;
+    const breadcrumbs = [{ name: "ホーム", url: `${siteUrl}/` }, { name: "記事アーカイブ", url: canonicalUrl }];
+    const posts = articles.map((article) => {
+      const categoryHtml = isPublicCategory(article.category)
+        ? `<a class="category" href="${escapeHtml(categoryUrl(siteUrl, article.category))}">${escapeHtml(categoryLabel(article.category))}</a>`
+        : `<span class="category">${escapeHtml(categoryLabel(article.category))}</span>`;
+      return `<article class="post"><h2><a href="/article/${escapeHtml(String(article.id))}">${escapeHtml(article.title)}</a></h2>
+  <div class="meta"><time datetime="${escapeHtml(article.publishedAt)}">公開日時: ${escapeHtml(new Date(article.publishedAt).toLocaleString("ja-JP"))}</time>${categoryHtml}</div></article>`;
+    }).join("");
+    const previousUrl = currentPage === 2 ? "/archive" : `/archive?page=${currentPage - 1}`;
+    const nextUrl = `/archive?page=${currentPage + 1}`;
+    const previousPage = currentPage > 1
+      ? `<a href="${previousUrl}">&larr; 前のページへ</a>`
+      : "<span>&larr; 前のページへ</span>";
+    const nextPage = currentPage < totalPages
+      ? `<a href="${nextUrl}">次のページへ &rarr;</a>`
+      : "<span>次のページへ &rarr;</span>";
+    const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeHtml(pageTitle)}</title><meta name="description" content="${escapeHtml(description)}"><link rel="canonical" href="${canonicalUrl}">
+${currentPage > 1 ? `<link rel="prev" href="${siteUrl}${previousUrl}">` : ""}${currentPage < totalPages ? `<link rel="next" href="${siteUrl}${nextUrl}">` : ""}
+<meta property="og:type" content="website"><meta property="og:title" content="${escapeHtml(pageTitle)}"><meta property="og:description" content="${escapeHtml(description)}"><meta property="og:url" content="${canonicalUrl}">
+<meta name="twitter:card" content="summary"><meta name="twitter:title" content="${escapeHtml(pageTitle)}"><meta name="twitter:description" content="${escapeHtml(description)}">
+<script type="application/ld+json">${jsonLd(breadcrumbJsonLd(siteUrl, breadcrumbs))}</script>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f7f9fa;color:#222;margin:0;padding:20px}.container{max-width:800px;margin:0 auto;background:#fff;padding:30px;border-radius:8px}.site-nav{margin-bottom:20px}.site-nav a{margin-right:16px;color:#0070f3}.post{border-bottom:1px solid #eee;padding:20px 0}.post h2{font-size:19px;margin:0 0 10px}.post h2 a{color:#111;text-decoration:none}.meta{display:flex;gap:15px;color:#666;font-size:13px}.category{background:#edf4ff;border-radius:999px;color:#1856a5;padding:2px 8px}.pagination{display:flex;justify-content:space-between;margin-top:30px;padding-top:20px;border-top:1px solid #eaeaea}</style>
+</head><body><main class="container"><nav class="site-nav" aria-label="サイトナビゲーション"><a href="/">ホーム</a><a href="/archive" aria-current="page">記事アーカイブ</a></nav><h1>記事アーカイブ</h1>${renderBreadcrumb(breadcrumbs)}<div class="posts">${posts}</div><div class="pagination">${previousPage}<span>ページ ${currentPage} / ${totalPages}</span>${nextPage}</div></main></body></html>`;
+    return new Response(html, { headers: HTML_HEADERS });
+  } catch (error) {
+    logOperationFailure(error, "archive_page", "worker");
     return new Response("記事の読み込み中にエラーが発生しました。", { status: 500, headers: TEXT_HEADERS });
   }
 }
@@ -1824,12 +1881,16 @@ ${currentPage < totalPages ? `<link rel="next" href="${nextUrl}">` : ""}
     .pagination a:hover { background: #0051a2; }
     .pagination span { color: #666; }
     .pagination .disabled { background: #ccc; pointer-events: none; }
+    .site-nav { margin-bottom: 16px; }
+    .site-nav a { color: #0070f3; font-size: 14px; text-decoration: none; }
+    .site-nav a:hover { text-decoration: underline; }
     .footer { text-align: center; font-size: 12px; color: #aaa; margin-top: 40px; border-top: 1px solid #eaeaea; padding-top: 15px; }
     .compliance-box { background: #fdfdfd; border: 1px solid #e5e5e5; padding: 12px 15px; border-radius: 6px; font-size: 11px; color: #666; text-align: left; margin-bottom: 20px; line-height: 1.6; }
   </style>
 </head>
 <body>
   <div class="container">
+    <nav class="site-nav" aria-label="サイトナビゲーション"><a href="/archive">記事アーカイブ</a></nav>
     <h1>🔥 テクノロジー＆ビジネストレンド最速まとめ速報</h1>
     <p style="font-size: 13px; color: #666;">ビジネスパーソン必見。AI、SaaS、セキュリティ、次世代インフラなど、最先端のビジネス動向を深く鋭く分析し、実務に直結する熱の高いインサイトをお届けします。</p>
     <div class="posts">${postsHtml}</div>
@@ -1897,6 +1958,11 @@ async function handleSitemap(env) {
     <loc>${siteUrl}/</loc>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>${siteUrl}/archive</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
   </url>
 ${articleUrls}
 ${categoryUrls}
