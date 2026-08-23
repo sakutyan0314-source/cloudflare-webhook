@@ -98,7 +98,7 @@ export async function resolveApprovedCanaryBundle(db, payload, now = new Date())
     internal_link_guidance: snapshots.productionInput.internal_link_guidance,
     ai_generation_authorized: false, publication_authorized: false, execution_authorized: false,
   };
-  return { row, brief, specification: { triggerType: "manual", idempotencyKey: `manual:topic:${row.production_input_id}`, scheduledFor: null, sourceType: "approved_topic_candidate", discordHeader: null, topicAwareBrief: brief } };
+  return { row, brief, specification: { triggerType: "manual", idempotencyKey: `manual:topic:${row.production_input_id}`, scheduledFor: null, sourceType: "approved_topic_candidate", discordHeader: null, approvedCanaryMaxAttempts: { gemini: 1, claude: 1, openai: 1, discord: 1 }, topicAwareBrief: brief } };
 }
 export async function reserveApprovedCanary(db, resolved, occurredAt) {
   const row = resolved.row;

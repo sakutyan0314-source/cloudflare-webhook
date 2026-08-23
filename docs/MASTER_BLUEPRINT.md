@@ -148,7 +148,7 @@
 ### internal canary route
 
 - `POST /internal/approved-canary` と `POST /internal/approved-canary/publication` は `OPERATIONS_API_TOKEN` のBearer認証、POST、JSON、16 KiB上限、未知field拒否、固定trigger、承認済みID群の完全性検証を要求する。canaryのpipeline run IDは外部入力で指定せず、`manual:topic:<production_input_id>` のidempotency lookupで取得した実run IDだけをproduction executionへ記録する。reservation・terminal state transitionはCAS更新と条件付きevent appendの両方が1件成功しなければfail-closedとする。
-- authorization bundle resolverは`env.DB`の固定SELECT経路であり、bundleなし・期限切れ・改ざん・既存executionはpipeline開始前にfail-closedする。deployだけでAI、Production Execution、staging、publication、`curation_logs`追加、Discordを開始しない。publication endpointは別runtime依存のままであり、canary生成から自動的に公開へ進まない。
+- authorization bundle resolverは`env.DB`の固定SELECT経路であり、bundleなし・期限切れ・改ざん・既存executionはpipeline開始前にfail-closedする。approved-canaryの解決済みspecificationだけはGemini、Claude、OpenAI、Discordの`maxAttempts`を各1回に固定し、通常Cron/manual pipelineの既定retry（LLM 2回、Discord 3回）は変更しない。deployだけでAI、Production Execution、staging、publication、`curation_logs`追加、Discordを開始しない。publication endpointは別runtime依存のままであり、canary生成から自動的に公開へ進まない。
 - Cron `scheduled → runScheduledPipeline → runReliablePipeline`、手動pipeline、public GET routeとは完全に分離する。
 
 ## 4. 現在の事業モデル

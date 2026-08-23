@@ -1770,9 +1770,13 @@ async function handleExistingPipelineRun(env, run, specification, runtime = {}) 
 }
 
 async function runReliablePipeline(env, specification, runtime = {}) {
+  const approvedCanaryMaxAttempts = resolveApprovedCanaryMaxAttempts(specification);
   const topicAwareGeminiInstruction = await resolveTopicAwareGeminiInstruction(specification);
   const acquisition = await acquirePipelineRun(env.DB, specification, runtime);
-  const pipelineRuntime = pipelineDeadlineRuntime(runtime, acquisition.run.started_at);
+  const pipelineRuntime = pipelineDeadlineRuntime(
+    approvedCanaryMaxAttempts ? { ...runtime, approvedCanaryMaxAttempts } : runtime,
+    acquisition.run.started_at
+  );
   if (!acquisition.acquired) {
     return handleExistingPipelineRun(env, acquisition.run, specification, pipelineRuntime);
   }
@@ -1806,6 +1810,33 @@ async function runReliablePipeline(env, specification, runtime = {}) {
     if (!existingArticle) await markPipelineFailed(env.DB, run.id, error, stage, pipelineRuntime);
     throw normalizeOperationError(error, stage, stage === "d1_save" ? "d1" : stage);
   }
+}
+
+function resolveApprovedCanaryMaxAttempts(specification) {
+  const hasPolicy = Object.prototype.hasOwnProperty.call(specification ?? {}, "approvedCanaryMaxAttempts");
+  if (specification?.sourceType !== "approved_topic_candidate") {
+    if (hasPolicy) {
+      throw new OperationError({
+        stage: "pipeline_acquire",
+        provider: "worker",
+        errorCode: "approved_canary_retry_policy_invalid"
+      });
+    }
+    return null;
+  }
+
+  const policy = specification.approvedCanaryMaxAttempts;
+  const providers = ["gemini", "claude", "openai", "discord"];
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)
+    || Object.keys(policy).length !== providers.length
+    || providers.some((provider) => policy[provider] !== 1)) {
+    throw new OperationError({
+      stage: "pipeline_acquire",
+      provider: "worker",
+      errorCode: "approved_canary_retry_policy_invalid"
+    });
+  }
+  return Object.freeze({ gemini: 1, claude: 1, openai: 1, discord: 1 });
 }
 
 async function resolveTopicAwareGeminiInstruction(specification) {
@@ -2269,7 +2300,7 @@ async function sendToDiscord(webhookUrl, content, runtime = {}) {
       body: JSON.stringify({ content })
     },
     timeoutMs: runtime.timeouts?.discord ?? EXTERNAL_API_TIMEOUTS.discord,
-    maxAttempts: DISCORD_MAX_ATTEMPTS,
+    maxAttempts: runtime.approvedCanaryMaxAttempts?.discord ?? DISCORD_MAX_ATTEMPTS,
     deliveryUnknownOnTransportFailure: true
   }, runtime);
   return "Message sent successfully to Discord.";
@@ -2316,7 +2347,7 @@ async function callGemini(apiKey, runtime = {}) {
     },
     consumeResponse: (response, signal) => parseJsonResponse(response, "gemini", "gemini", signal),
     timeoutMs: runtime.timeouts?.gemini ?? EXTERNAL_API_TIMEOUTS.gemini,
-    maxAttempts: LLM_MAX_ATTEMPTS
+    maxAttempts: runtime.approvedCanaryMaxAttempts?.gemini ?? LLM_MAX_ATTEMPTS
   }, runtime);
   return requireResponseText(data.candidates?.[0]?.content?.parts?.[0]?.text, "gemini", "gemini");
 }
@@ -2345,7 +2376,7 @@ async function callClaude(apiKey, draftText, runtime = {}) {
     },
     consumeResponse: (response, signal) => parseJsonResponse(response, "claude", "claude", signal),
     timeoutMs: runtime.timeouts?.claude ?? EXTERNAL_API_TIMEOUTS.claude,
-    maxAttempts: LLM_MAX_ATTEMPTS
+    maxAttempts: runtime.approvedCanaryMaxAttempts?.claude ?? LLM_MAX_ATTEMPTS
   }, runtime);
   return requireResponseText(data.content?.[0]?.text, "claude", "claude");
 }
@@ -2373,7 +2404,7 @@ async function callOpenAI(apiKey, reviewedText, runtime = {}) {
     },
     consumeResponse: (response, signal) => parseJsonResponse(response, "openai", "openai", signal),
     timeoutMs: runtime.timeouts?.openai ?? EXTERNAL_API_TIMEOUTS.openai,
-    maxAttempts: LLM_MAX_ATTEMPTS
+    maxAttempts: runtime.approvedCanaryMaxAttempts?.openai ?? LLM_MAX_ATTEMPTS
   }, runtime);
   return requireResponseText(data.choices?.[0]?.message?.content, "openai", "openai");
 }

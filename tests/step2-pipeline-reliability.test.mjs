@@ -132,6 +132,21 @@ function manualSpecification(key = "manual-key") {
   };
 }
 
+function approvedCanarySpecification(key = "approved-canary") {
+  return {
+    ...manualSpecification(`topic:${key}`),
+    sourceType: "approved_topic_candidate",
+    approvedCanaryMaxAttempts: { gemini: 1, claude: 1, openai: 1, discord: 1 },
+    topicAwareBrief: {
+      production_input_id: key, topic_candidate_id: "topic-1", human_review_id: "review-1",
+      topic: "生成AIのガバナンス", title_hint: "生成AIガバナンスの実践", primary_intent: "how",
+      target_audience: "事業責任者", problem_to_solve: "導入統制", cluster_id: "ai-automation",
+      internal_link_guidance: { suggested_parent_article_id: 26, suggested_sibling_article_ids: [17], suggested_child_article_ids: [] },
+      ai_generation_authorized: false, publication_authorized: false, execution_authorized: false
+    }
+  };
+}
+
 let testCount = 0;
 async function test(name, fn) {
   await fn();
@@ -258,15 +273,7 @@ await test("same manual key does not run LLM twice", async () => {
 await test("approved topic-aware brief reaches Gemini while retaining the existing pipeline and single-use idempotency", async () => {
   const harness = createHarness();
   const specification = {
-    ...manualSpecification("topic:production-input-1"),
-    sourceType: "approved_topic_candidate",
-    topicAwareBrief: {
-      production_input_id: "production-input-1", topic_candidate_id: "topic-1", human_review_id: "review-1",
-      topic: "生成AIのガバナンス", title_hint: "生成AIガバナンスの実践", primary_intent: "how",
-      target_audience: "事業責任者", problem_to_solve: "導入統制", cluster_id: "ai-automation",
-      internal_link_guidance: { suggested_parent_article_id: 26, suggested_sibling_article_ids: [17], suggested_child_article_ids: [] },
-      ai_generation_authorized: false, publication_authorized: false, execution_authorized: false
-    }
+    ...approvedCanarySpecification("production-input-1")
   };
   const originalFetch = harness.runtime.fetch;
   let geminiBody = "";
@@ -281,6 +288,61 @@ await test("approved topic-aware brief reaches Gemini while retaining the existi
   assert.match(geminiBody, /生成AIのガバナンス/); assert.match(geminiBody, /検索意図: how/);
   assert.equal(harness.calls.length, providerCalls); assert.equal(harness.db.state.articles.length, 1);
   assert.equal(harness.qualityGateAudits.length, 1);
+});
+
+for (const [provider, urlFragment] of [["gemini", "googleapis"], ["claude", "anthropic"], ["openai", "openai"]]) {
+  await test(`approved canary ${provider} failure makes exactly one provider request`, async () => {
+    const harness = createHarness();
+    const baseFetch = harness.runtime.fetch;
+    let retries = 0;
+    harness.runtime.sleep = async () => { retries += 1; };
+    harness.runtime.fetch = async (url, init) => {
+      if (url.includes(urlFragment)) {
+        harness.calls.push(url);
+        return response(500);
+      }
+      return baseFetch(url, init);
+    };
+    await assert.rejects(runReliablePipeline(harness.env, approvedCanarySpecification(`one-${provider}`), harness.runtime));
+    assert.equal(harness.calls.filter((url) => url.includes(urlFragment)).length, 1);
+    assert.equal(retries, 0);
+  });
+}
+
+await test("approved canary Discord failure makes exactly one notification request", async () => {
+  const harness = createHarness({ discordShouldFail: true });
+  let retries = 0;
+  harness.runtime.sleep = async () => { retries += 1; };
+  await assert.rejects(runReliablePipeline(harness.env, approvedCanarySpecification("one-discord"), harness.runtime));
+  assert.equal(harness.calls.filter((url) => url.includes("discord")).length, 1);
+  assert.equal(harness.db.state.pipelineRuns[0].notification_attempt_count, 1);
+  assert.equal(retries, 0);
+});
+
+await test("approved canary without exact one-attempt policy fails before acquisition", async () => {
+  const harness = createHarness();
+  const specification = approvedCanarySpecification("invalid-policy");
+  specification.approvedCanaryMaxAttempts.openai = 2;
+  await assert.rejects(runReliablePipeline(harness.env, specification, harness.runtime), (error) => error.errorCode === "approved_canary_retry_policy_invalid");
+  assert.equal(harness.db.state.pipelineRuns.length, 0);
+  assert.equal(harness.calls.length, 0);
+});
+
+await test("ordinary manual pipeline retains the existing LLM retry policy", async () => {
+  const harness = createHarness();
+  const baseFetch = harness.runtime.fetch;
+  let geminiAttempts = 0;
+  harness.runtime.fetch = async (url, init) => {
+    if (url.includes("googleapis")) {
+      geminiAttempts += 1;
+      harness.calls.push(url);
+      return geminiAttempts === 1 ? response(500) : response(200, successData("gemini"));
+    }
+    return baseFetch(url, init);
+  };
+  const result = await runReliablePipeline(harness.env, manualSpecification("normal-retry"), harness.runtime);
+  assert.equal(result.outcome, "completed");
+  assert.equal(geminiAttempts, 2);
 });
 
 await test("invalid topic-aware brief fails before pipeline acquisition or Gemini", async () => {
