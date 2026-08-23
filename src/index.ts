@@ -221,13 +221,22 @@ async function handleApprovedCanaryRequest(request, env) {
   const accessError = await authorizeOperationsRequest(request, env, "POST");
   if (accessError) return accessError;
   try {
-    const payload = await parseInternalJsonRequest(request, new Set(["trigger_type", "production_input_id", "approval_id", "production_execution_id", "pipeline_run_id"]));
-    if (payload.trigger_type !== "approved_canary" || Object.keys(payload).length !== 5 || !["production_input_id", "approval_id", "production_execution_id"].every((key) => typeof payload[key] === "string" && payload[key]) || !Number.isSafeInteger(payload.pipeline_run_id) || payload.pipeline_run_id < 1) throw new Error("request_invalid");
+    const payload = await parseInternalJsonRequest(request, new Set(["trigger_type", "production_input_id", "approval_id", "production_execution_id"]));
+    if (payload.trigger_type !== "approved_canary" || Object.keys(payload).length !== 4 || !["production_input_id", "approval_id", "production_execution_id"].every((key) => typeof payload[key] === "string" && payload[key])) throw new Error("request_invalid");
     const { resolveApprovedCanaryBundle, reserveApprovedCanary, finalizeApprovedCanary, recordApprovedCanaryOutcomeUnknown } = await import("./approved_content_authorization_bundle_runtime.js");
     const resolved = await resolveApprovedCanaryBundle(env.DB, payload);
     await reserveApprovedCanary(env.DB, resolved, new Date().toISOString());
+    let result;
     try {
-      const result = await runReliablePipeline(env, resolved.specification);
+      result = await runReliablePipeline(env, resolved.specification);
+    } catch (error) {
+      try {
+        if (error?.deliveryUnknown === true) await recordApprovedCanaryOutcomeUnknown(env.DB, resolved, new Date().toISOString());
+        else await finalizeApprovedCanary(env.DB, resolved, { result: null, occurredAt: new Date().toISOString() });
+      } catch {}
+      throw error;
+    }
+    try {
       const execution = await finalizeApprovedCanary(env.DB, resolved, { result, occurredAt: new Date().toISOString() });
       return new Response(JSON.stringify({ status: "accepted", pipeline_run_id: execution.pipelineRunId, article_id: execution.articleId }), { status: 202, headers: PRIVATE_JSON_HEADERS });
     } catch (error) {

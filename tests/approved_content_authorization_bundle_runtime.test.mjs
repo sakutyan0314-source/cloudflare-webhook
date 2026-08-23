@@ -35,3 +35,59 @@ await test("expired approval fails before pipeline",async()=>{const item=await r
 await test("fingerprint tampering fails before pipeline",async()=>{const item=await row({tamper:true});await assert.rejects(runtime.resolveApprovedCanaryBundle(dbFor(item),payload,new Date("2026-08-22T19:00:00.000Z")));});
 await test("used production input fails before pipeline",async()=>{const item=await row({used:true});await assert.rejects(runtime.resolveApprovedCanaryBundle(dbFor(item),payload,new Date("2026-08-22T19:00:00.000Z")));});
 await test("missing bundle fails before pipeline",async()=>{const item={result:null,used:false};await assert.rejects(runtime.resolveApprovedCanaryBundle(dbFor(item),payload,new Date("2026-08-22T19:00:00.000Z")));});
+
+function changes(value = 1) { return { meta: { changes: value } }; }
+function transitionDb({ transitionChanges = 1, finalizeChanges = 1 } = {}) {
+  const batches = [];
+  return {
+    batches,
+    prepare(sql) {
+      return {
+        sql,
+        bind(...args) {
+          return {
+            sql,
+            args,
+            first: async () => sql.includes("FROM pipeline_runs")
+              ? { id: 7, article_id: 9 }
+              : sql.includes("FROM quality_gate_audits")
+                ? { audit_id: "audit_one", classification: "pass" }
+                : null,
+          };
+        },
+      };
+    },
+    async batch(statements) {
+      batches.push(statements);
+      const isFinalize = statements[0].sql.includes("SET state=?,classification=?,state_version=4");
+      const isTransition = statements[0].sql.includes("SET state=?, state_version=?");
+      const count = isFinalize ? finalizeChanges : isTransition ? transitionChanges : 1;
+      return [changes(count), changes(count)];
+    },
+  };
+}
+
+await test("reservation refuses a zero-row CAS before a transition event can exist", async () => {
+  const item = await row();
+  const db = transitionDb({ transitionChanges: 0 });
+  await assert.rejects(runtime.reserveApprovedCanary(db, { row: item.result }, "2026-08-22T19:00:00.000Z"), /canary_state_reservation_failed/);
+  assert.equal(db.batches.length, 2);
+  assert.match(db.batches[1][1].sql, /WHERE EXISTS \(SELECT 1 FROM production_executions/);
+});
+
+await test("finalization refuses a zero-row CAS before its terminal event can exist", async () => {
+  const item = await row();
+  const db = transitionDb({ finalizeChanges: 0 });
+  await assert.rejects(runtime.finalizeApprovedCanary(db, { row: item.result, specification: { idempotencyKey: "manual:topic:input_one" } }, { result: { outcome: "completed" }, occurredAt: "2026-08-22T19:00:00.000Z" }), /canary_state_finalize_failed/);
+  assert.equal(db.batches.length, 1);
+  assert.match(db.batches[0][1].sql, /WHERE EXISTS \(SELECT 1 FROM production_executions/);
+});
+
+await test("finalization records the actual pipeline run identity from idempotency lookup", async () => {
+  const item = await row();
+  const db = transitionDb();
+  const outcome = await runtime.finalizeApprovedCanary(db, { row: item.result, specification: { idempotencyKey: "manual:topic:input_one" } }, { result: { outcome: "completed" }, occurredAt: "2026-08-22T19:00:00.000Z" });
+  assert.equal(outcome.pipelineRunId, 7);
+  assert.equal(outcome.articleId, 9);
+  assert.equal(outcome.qualityGateAuditId, "audit_one");
+});

@@ -5,6 +5,18 @@ const FORBIDDEN = new Set(["content", "body_markdown", "prompt", "token", "secre
 
 export class ApprovedCanaryRuntimeError extends Error {}
 
+function statementChanges(result) {
+  return Number(result?.meta?.changes ?? result?.changes ?? 0);
+}
+
+async function requireExactBatch(db, statements, errorCode) {
+  let results;
+  try { results = await db.batch(statements); } catch { throw new ApprovedCanaryRuntimeError(errorCode); }
+  if (!Array.isArray(results) || results.length !== statements.length || results.some((result) => statementChanges(result) !== 1)) {
+    throw new ApprovedCanaryRuntimeError(errorCode);
+  }
+}
+
 function rejectForbidden(value) {
   if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) {
     if (FORBIDDEN.has(key.toLowerCase())) throw new ApprovedCanaryRuntimeError("bundle_forbidden_field");
@@ -95,14 +107,13 @@ export async function reserveApprovedCanary(db, resolved, occurredAt) {
     db.prepare("INSERT INTO production_executions (production_execution_id,schema_version,production_input_id,production_input_fingerprint,approval_id,topic_candidate_id,human_review_id,trigger_type,state,classification,state_version,notification_classification,publication_authorized,created_at) VALUES (?,?,?,?,?,?,?,?, 'planned',NULL,0,'not_applicable',0,?)").bind(row.production_execution_id, "approved-canary-production-execution-v1", row.production_input_id, JSON.parse(row.approval_snapshot_json).production_input_fingerprint, row.production_approval_id, row.topic_candidate_id, row.review_id, "approved_canary", occurredAt),
     db.prepare("INSERT INTO production_execution_events (event_id,production_execution_id,event_sequence,from_state,to_state,classification,reason_code,occurred_at) VALUES (?, ?, 0, NULL, 'planned', NULL, NULL, ?)").bind(eventId, row.production_execution_id, occurredAt),
   ];
-  try { await db.batch(statements); } catch { throw new ApprovedCanaryRuntimeError("canary_single_use_reservation_failed"); }
+  await requireExactBatch(db, statements, "canary_single_use_reservation_failed");
   for (const [sequence, from, to] of [[1, "planned", "preflight_verified"], [2, "preflight_verified", "approval_verified"], [3, "approval_verified", "send_started"]]) {
     const event = `production_event_${crypto.randomUUID()}`;
-    const result = await db.batch([
+    await requireExactBatch(db, [
       db.prepare("UPDATE production_executions SET state=?, state_version=?, started_at=CASE WHEN ?='preflight_verified' THEN ? ELSE started_at END, send_started_at=CASE WHEN ?='send_started' THEN ? ELSE send_started_at END WHERE production_execution_id=? AND state=? AND state_version=?").bind(to, sequence, to, occurredAt, to, occurredAt, row.production_execution_id, from, sequence - 1),
-      db.prepare("INSERT INTO production_execution_events (event_id,production_execution_id,event_sequence,from_state,to_state,classification,reason_code,occurred_at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)").bind(event, row.production_execution_id, sequence, from, to, occurredAt),
-    ]);
-    if (!result) throw new ApprovedCanaryRuntimeError("canary_state_reservation_failed");
+      db.prepare("INSERT INTO production_execution_events (event_id,production_execution_id,event_sequence,from_state,to_state,classification,reason_code,occurred_at) SELECT ?, ?, ?, ?, ?, NULL, NULL, ? WHERE EXISTS (SELECT 1 FROM production_executions WHERE production_execution_id=? AND state=? AND state_version=?)").bind(event, row.production_execution_id, sequence, from, to, occurredAt, row.production_execution_id, to, sequence),
+    ], "canary_state_reservation_failed");
   }
 }
 
@@ -115,17 +126,17 @@ export async function finalizeApprovedCanary(db, resolved, { result, occurredAt 
   const classification = success ? "success" : "known_failure";
   const reason = success ? null : "transport_known_failure";
   const event = `production_event_${crypto.randomUUID()}`;
-  await db.batch([
+  await requireExactBatch(db, [
     db.prepare("UPDATE production_executions SET state=?,classification=?,state_version=4,completed_at=?,pipeline_run_id=?,final_article_id=?,quality_gate_audit_id=? WHERE production_execution_id=? AND state='send_started' AND state_version=3").bind(state, classification, occurredAt, pipeline?.id ?? null, pipeline?.article_id ?? null, audit?.classification === "pass" ? audit.audit_id : null, row.production_execution_id),
-    db.prepare("INSERT INTO production_execution_events (event_id,production_execution_id,event_sequence,from_state,to_state,classification,reason_code,occurred_at) VALUES (?, ?, 4, 'send_started', ?, ?, ?, ?)").bind(event, row.production_execution_id, state, classification, reason, occurredAt),
-  ]);
+    db.prepare("INSERT INTO production_execution_events (event_id,production_execution_id,event_sequence,from_state,to_state,classification,reason_code,occurred_at) SELECT ?, ?, 4, 'send_started', ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM production_executions WHERE production_execution_id=? AND state=? AND state_version=4)").bind(event, row.production_execution_id, state, classification, reason, occurredAt, row.production_execution_id, state),
+  ], "canary_state_finalize_failed");
   return { state, classification, pipelineRunId: pipeline?.id ?? null, articleId: pipeline?.article_id ?? null, qualityGateAuditId: audit?.audit_id ?? null };
 }
 
 export async function recordApprovedCanaryOutcomeUnknown(db, resolved, occurredAt) {
   const event = `production_event_${crypto.randomUUID()}`;
-  await db.batch([
+  await requireExactBatch(db, [
     db.prepare("UPDATE production_executions SET state='outcome_unknown',classification='outcome_unknown',state_version=4,completed_at=? WHERE production_execution_id=? AND state='send_started' AND state_version=3").bind(occurredAt, resolved.row.production_execution_id),
-    db.prepare("INSERT INTO production_execution_events (event_id,production_execution_id,event_sequence,from_state,to_state,classification,reason_code,occurred_at) VALUES (?, ?, 4, 'send_started', 'outcome_unknown', 'outcome_unknown', 'outcome_unknown_requires_review', ?)").bind(event, resolved.row.production_execution_id, occurredAt),
-  ]);
+    db.prepare("INSERT INTO production_execution_events (event_id,production_execution_id,event_sequence,from_state,to_state,classification,reason_code,occurred_at) SELECT ?, ?, 4, 'send_started', 'outcome_unknown', 'outcome_unknown', 'outcome_unknown_requires_review', ? WHERE EXISTS (SELECT 1 FROM production_executions WHERE production_execution_id=? AND state='outcome_unknown' AND state_version=4)").bind(event, resolved.row.production_execution_id, occurredAt, resolved.row.production_execution_id),
+  ], "canary_outcome_unknown_record_failed");
 }
