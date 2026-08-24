@@ -367,6 +367,14 @@ await test("quality gate saves a ready SEO article with separated fields", async
   assert.equal(harness.db.state.qualityGateChecks.length, 8);
 });
 
+await test("H1-first Markdown fixture exposes a title and passes the existing quality gate", async () => {
+  const evaluated = evaluateSeoQuality(validFinalArticle(0), "h1-fixture", "2026-08-10T00:00:00.000Z");
+  assert.equal(evaluated.audit.classification, "pass");
+  assert.equal(evaluated.article.title, "生成AIガバナンスを経営に組み込む実践戦略");
+  assert.equal(evaluated.audit.checks.h1_structure.status, "pass");
+  assert.equal(evaluated.audit.checks.title_presence.status, "pass");
+});
+
 await test("quality gate failure records a failed run without saving or notifying", async () => {
   const harness = createHarness({ finalArticle: "# 壊れた記事\n\n本文だけです" });
   await assert.rejects(runReliablePipeline(harness.env, manualSpecification("seo-failure"), harness.runtime));

@@ -87,6 +87,18 @@ await test("Retry-After seconds, HTTP-date, invalid and cap", async () => {
   assert.equal(parseRetryAfter(new Date(10_000).toUTCString(), 0), 10_000);
 });
 
+await test("OpenAI prompt requires H1-first Markdown without preamble", async () => {
+  let prompt = "";
+  await callOpenAI(DUMMY_SECRET, "reviewed", runtimeWith(async (_url, init) => {
+    prompt = JSON.parse(init.body).messages[0].content;
+    return response(200, successData("openai", "final"));
+  }));
+  assert.match(prompt, /出力はMarkdown記事本文のみ/);
+  assert.match(prompt, /最初の非空行は必ず次の形式のH1だけにする/);
+  assert.match(prompt, /# タイトル/);
+  assert.match(prompt, /コードフェンス、JSONは出力しない/);
+});
+
 for (const provider of ["gemini", "claude", "openai"]) {
   await test(`${provider} 200 validates non-empty text`, async () => {
     let calls = 0;
