@@ -37,10 +37,12 @@ class MarketSignalAnalysisAdapter:
             return validate_market_analysis(response, payload)
         except TimeoutError as error:
             self.last_rejection_code = "timeout"
-            raise MarketSignalAnalysisAdapterError("market analysis timed out") from error
+            raise MarketSignalAnalysisAdapterError("market analysis timed out", code=self.last_rejection_code) from error
         except MarketAnalysisError as error:
             self.last_rejection_code = "schema_or_policy_failure"
-            raise MarketSignalAnalysisAdapterError("market analysis was rejected") from error
+            raise MarketSignalAnalysisAdapterError(
+                "market analysis was rejected", code=self.last_rejection_code
+            ) from error
         except MarketSignalAnalysisAdapterError:
             self.last_rejection_code = self.last_rejection_code or "provider_or_input_failure"
             raise

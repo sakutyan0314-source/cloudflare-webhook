@@ -82,4 +82,14 @@ class TestMarketSignal(unittest.TestCase):
    self.assertEqual('live_request',adapter.search(query='q',now=now)[1]); self.assertEqual(1,len(calls))
    second=serp.SerpApiGoogleSearchAdapter(api_key='',cache=cache,transport=lambda *_:self.fail('cache hit must not transport'))
    self.assertEqual('cache_hit',second.search(query='q',now=now)[1]); self.assertEqual(0,second.request_count)
+ def test_cache_schema_mismatch_fails_closed_before_serp_request(self):
+  with tempfile.TemporaryDirectory() as directory:
+   cache=serp.LocalNormalizedSerpCache(pathlib.Path(directory));key=serp.serp_cache_key(query='q',locale='ja',region='jp',result_count=10)
+   (pathlib.Path(directory)/f'{key}.json').write_text(json.dumps({'schema_version':'wrong','cached_at':'2026-08-25T00:00:00Z','results':[]}))
+   with self.assertRaises(serp.SerpApiSafetyError): cache.get(key,now=datetime(2026,8,25,tzinfo=timezone.utc))
+ def test_stale_cache_is_not_reused(self):
+  with tempfile.TemporaryDirectory() as directory:
+   cache=serp.LocalNormalizedSerpCache(pathlib.Path(directory),ttl_seconds=604800);key=serp.serp_cache_key(query='q',locale='ja',region='jp',result_count=10);cached=datetime(2026,8,1,tzinfo=timezone.utc)
+   cache.put(key,serp.normalize_serp_response(FIX),now=cached)
+   self.assertIsNone(cache.get(key,now=datetime(2026,8,9,tzinfo=timezone.utc)))
 if __name__=='__main__': unittest.main()

@@ -47,6 +47,21 @@ def normalize_serp_response(value: Mapping[str, Any], *, limit: int = MAX_SERP_R
     return output
 
 
+def validate_normalized_results(value: object) -> list[dict[str, Any]]:
+    """Validate the only cache payload consumed by the live SERP path."""
+    if not isinstance(value, list) or len(value) > MAX_SERP_RESULTS:
+        raise SerpApiSafetyError("normalized_cache_results_invalid")
+    output, urls = [], set()
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"schema_version", "position", "title", "url", "domain", "snippet", "published_at"}:
+            raise SerpApiSafetyError("normalized_cache_results_invalid")
+        url = canonical_result_url(item.get("url"))
+        if item.get("schema_version") != SERP_RESULT_SCHEMA_VERSION or not isinstance(item.get("position"), int) or item["position"] < 1 or not isinstance(item.get("title"), str) or not item["title"].strip() or not isinstance(item.get("domain"), str) or item["domain"] != urlsplit(url).netloc or not isinstance(item.get("snippet"), str) or not isinstance(item.get("published_at"), (str, type(None))) or url in urls:
+            raise SerpApiSafetyError("normalized_cache_results_invalid")
+        output.append(dict(item)); urls.add(url)
+    return output
+
+
 def normalized_query(value: object) -> str:
     if not isinstance(value, str) or not value.strip(): raise SerpApiSafetyError("query_invalid")
     return " ".join(value.split()).casefold()
@@ -65,14 +80,14 @@ class LocalNormalizedSerpCache:
         try: value=json.loads(path.read_text())
         except FileNotFoundError: return None
         except (OSError, json.JSONDecodeError): raise SerpApiSafetyError("cache_invalid")
-        if not isinstance(value, Mapping) or not isinstance(value.get("cached_at"), str) or not isinstance(value.get("results"), list): raise SerpApiSafetyError("cache_invalid")
+        if not isinstance(value, Mapping) or value.get("schema_version") != "normalized-serp-cache-v1" or not isinstance(value.get("cached_at"), str) or not isinstance(value.get("results"), list): raise SerpApiSafetyError("cache_invalid")
         try: cached=datetime.fromisoformat(value["cached_at"].replace("Z","+00:00"))
         except ValueError as error: raise SerpApiSafetyError("cache_invalid") from error
         if now - cached > timedelta(seconds=self.ttl_seconds): return None
-        return [dict(item) for item in value["results"] if isinstance(item, Mapping)]
+        return validate_normalized_results(value["results"])
     def put(self, key: str, results: Sequence[Mapping[str, Any]], *, now: datetime) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
-        payload={"schema_version":"normalized-serp-cache-v1","cached_at":now.isoformat(timespec="seconds").replace("+00:00","Z"),"results":[dict(item) for item in results]}
+        payload={"schema_version":"normalized-serp-cache-v1","cached_at":now.isoformat(timespec="seconds").replace("+00:00","Z"),"results":validate_normalized_results(list(results))}
         (self.directory / f"{key}.json").write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 def _http_get(url: str, timeout: float) -> tuple[int, bytes]:

@@ -38,18 +38,22 @@ class FixedSelectTransport:
 def read_own_site(property_uri: str, start: str, end: str, transport: Any) -> tuple[list[Mapping[str,Any]],list[Mapping[str,Any]],list[Mapping[str,Any]]]:
     pages, affiliate, articles=AiRecommendationD1Reader(transport).fetch_source(property_uri,"web",start,end)
     return articles,pages,affiliate
+def load_planning_fixture(path: str) -> Mapping[str, Any]:
+    value=json.loads(Path(path).read_text())
+    if not isinstance(value,Mapping) or set(value)!={"analysis","opportunities"} or not isinstance(value["analysis"],Mapping) or not isinstance(value["opportunities"],list): raise MarketSignalReadError("planning_fixture_invalid")
+    return value
 def main(argv: Sequence[str]|None=None)->int:
     parser=argparse.ArgumentParser(description="Build a Market Signal report; SERP is fixture-only unless --live-serp is explicit.")
     parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture"); parser.add_argument("--live-serp",action="store_true"); parser.add_argument("--own-site-fixture"); parser.add_argument("--planning-fixture"); parser.add_argument("--analysis-response-fixture"); parser.add_argument("--live-analysis",action="store_true"); parser.add_argument("--period-start"); parser.add_argument("--period-end"); parser.add_argument("--property-uri",default="https://cloudflare-webhook.tyansaku3325.workers.dev/"); parser.add_argument("--cache-dir",default=".market-signal-cache"); parser.add_argument("--cache-ttl-seconds",type=int,default=7*24*60*60); parser.add_argument("--format",choices=("summary","json"),default="summary")
     args=parser.parse_args(argv)
     try:
         if args.live_serp == bool(args.serp_fixture) or (args.live_analysis and args.analysis_response_fixture): raise MarketSignalReadError("execution_mode_invalid")
+        planning=load_planning_fixture(args.planning_fixture) if args.planning_fixture else None
         if args.own_site_fixture:
             own=json.loads(Path(args.own_site_fixture).read_text())
             articles, pages, affiliate=own["articles"], own["page_daily"], own["affiliate_events"]
         else:
-            if not args.planning_fixture: raise MarketSignalReadError("planning_fixture_required")
-            own=json.loads(Path(args.planning_fixture).read_text())
+            if not args.live_analysis and planning is None: raise MarketSignalReadError("planning_fixture_required")
             end=args.period_end or date.today().isoformat(); start=args.period_start or (date.fromisoformat(end)-timedelta(days=13)).isoformat()
             articles,pages,affiliate=read_own_site(args.property_uri,start,end,FixedSelectTransport())
         if args.live_serp:
@@ -64,7 +68,8 @@ def main(argv: Sequence[str]|None=None)->int:
             analysis = {"common_intents": model_analysis["common_intents"], "common_angles": model_analysis["common_angles"], "uncovered_questions": [f"{item['classification']}: {item['question']}" for item in model_analysis["uncovered_questions"]]}
             opportunities = [{"topic": item["topic"], "reason": item["reason"], "market_evidence": item["market_evidence"], "own_site_gap": item["own_site_gap"], "expected_search_intent": item["common_intent"], "target_audience": item["target_audience"], "monetization_relevance": item["monetization_relevance"], "duplicate_risk": item["duplicate_risk"], "common_intent": item["common_intent"], "user_problem": item["user_problem"], "confidence": item["confidence"]} for item in model_analysis["candidate_drafts"]]
         else:
-            analysis, opportunities = own["analysis"], own["opportunities"]
+            if planning is not None: analysis, opportunities = planning["analysis"], planning["opportunities"]
+            else: analysis, opportunities = own["analysis"], own["opportunities"]
         report=build_market_signal_report(query=args.query,observed_at=args.observed_at,source={"provider":provider,"engine":"google","locale":"ja","region":"jp","requested_result_count":10},serp_results=results,analysis=analysis,own_site_signal=signal,opportunities=opportunities)
     except MarketSignalAnalysisAdapterError as error:
         output={"schema_version":"market-signal-report-v1","status":"fail","error_class":"market_signal_analysis_failed"}

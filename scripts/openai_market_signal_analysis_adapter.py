@@ -170,7 +170,9 @@ class OpenAiMarketSignalAnalysisTransport:
             raise
         except HTTPError as error:
             self.last_diagnostic = safe_http_error_diagnostic(error)
-            raise OpenAiMarketSignalAnalysisError("OpenAI market analysis HTTP request failed") from error
+            raise OpenAiMarketSignalAnalysisResponseError(
+                "http_error", self.last_diagnostic
+            ) from error
         except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError, OpenAiMarketSignalAnalysisError) as error:
             raise OpenAiMarketSignalAnalysisError("OpenAI market analysis request failed") from error
         if not isinstance(parsed, Mapping):
