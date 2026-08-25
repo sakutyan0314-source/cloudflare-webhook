@@ -150,6 +150,7 @@
 
 - `POST /internal/approved-canary` と `POST /internal/approved-canary/publication` は `OPERATIONS_API_TOKEN` のBearer認証、POST、JSON、16 KiB上限、未知field拒否、固定trigger、承認済みID群の完全性検証を要求する。canaryのpipeline run IDは外部入力で指定せず、`manual:topic:<production_input_id>` のidempotency lookupで取得した実run IDだけをproduction executionへ記録する。reservation・terminal state transitionはCAS更新と条件付きevent appendの両方が1件成功しなければfail-closedとする。
 - authorization bundle resolverは`env.DB`の固定SELECT経路であり、bundleなし・期限切れ・改ざん・既存executionはpipeline開始前にfail-closedする。approved-canaryの解決済みspecificationだけはGemini、Claude、OpenAI、Discordの`maxAttempts`を各1回に固定し、通常Cron/manual pipelineの既定retry（LLM 2回、Discord 3回）は変更しない。deployだけでAI、Production Execution、staging、publication、`curation_logs`追加、Discordを開始しない。publication endpointは別runtime依存のままであり、canary生成から自動的に公開へ進まない。
+- KPI baseline report CLIは既存D1の固定SELECTだけで、指定期間（既定14日）のpipeline供給・quality gate・Search Console page_daily・affiliate clickを同一schemaへ集計する。D1 write、migration、Worker、pipeline実行、閾値変更は行わない。Search Consoleの十分性は既存Phase 2Aの「current/previous各7観測日・各impressions 10」条件を再利用し、Topic Candidate ledgerとprovider別実コストは現行のproduction永続化対象外として明示する。
 - Cron `scheduled → runScheduledPipeline → runReliablePipeline`、手動pipeline、public GET routeとは完全に分離する。
 
 ## 4. 現在の事業モデル
