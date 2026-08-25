@@ -1,6 +1,7 @@
-import importlib.util, json, pathlib, sys, unittest
+import importlib.util, json, pathlib, sys, tempfile, unittest
 from contextlib import redirect_stdout
 import io
+from datetime import datetime, timezone
 ROOT=pathlib.Path(__file__).parents[1]
 def load(name):
  spec=importlib.util.spec_from_file_location(name,ROOT/'scripts'/f'{name}.py'); module=importlib.util.module_from_spec(spec); assert spec and spec.loader; sys.modules[name]=module; spec.loader.exec_module(module); return module
@@ -40,4 +41,28 @@ class TestMarketSignal(unittest.TestCase):
    returncode=0
    stdout=json.dumps([{'results':[],'meta':{'changed_db':True,'rows_written':1}}])
   with self.assertRaises(cli.MarketSignalReadError): cli.read_own_site('https://example.test/','2026-08-01','2026-08-14',cli.FixedSelectTransport(runner=lambda *_,**__:Changed()))
+ def test_live_adapter_missing_key_fails_before_transport_and_does_not_disclose(self):
+  calls=[]; adapter=serp.SerpApiGoogleSearchAdapter(api_key='',transport=lambda *args: calls.append(args))
+  with self.assertRaises(serp.SerpApiSafetyError) as error: adapter.search(query='Microsoft 365 Copilot')
+  self.assertEqual('api_key_missing',str(error.exception)); self.assertEqual([],calls); self.assertNotIn('SERP',str(error.exception))
+ def test_live_adapter_builds_one_japanese_google_request_and_normalizes(self):
+  calls=[]
+  def transport(url,timeout): calls.append((url,timeout)); return 200,json.dumps(FIX).encode()
+  adapter=serp.SerpApiGoogleSearchAdapter(api_key='test-key-not-disclosed',transport=transport)
+  rows,mode=adapter.search(query='Microsoft 365 Copilot')
+  self.assertEqual('live_request',mode); self.assertEqual(1,len(calls)); self.assertIn('engine=google',calls[0][0]); self.assertIn('hl=ja',calls[0][0]); self.assertIn('gl=jp',calls[0][0]); self.assertEqual(2,len(rows))
+  with self.assertRaises(serp.SerpApiSafetyError): adapter.search(query='second query')
+ def test_live_adapter_http_provider_and_malformed_fail_closed(self):
+  for response,expected in (((500,b''),'http_failure'),((200,b'{"error":"bad"}'),'provider_error'),((200,b'not-json'),'response_malformed'),((200,b'{"organic_results":[{}]}'),'response_malformed')):
+   with self.subTest(expected=expected):
+    adapter=serp.SerpApiGoogleSearchAdapter(api_key='x',transport=lambda *_:response)
+    with self.assertRaises(serp.SerpApiSafetyError) as error: adapter.search(query='q')
+    self.assertEqual(expected,str(error.exception))
+ def test_cache_hit_uses_zero_request_and_cache_miss_uses_one(self):
+  with tempfile.TemporaryDirectory() as directory:
+   cache=serp.LocalNormalizedSerpCache(pathlib.Path(directory),ttl_seconds=604800); now=datetime(2026,8,25,tzinfo=timezone.utc); calls=[]
+   adapter=serp.SerpApiGoogleSearchAdapter(api_key='x',cache=cache,transport=lambda *args:(calls.append(args) or (200,json.dumps(FIX).encode())))
+   self.assertEqual('live_request',adapter.search(query='q',now=now)[1]); self.assertEqual(1,len(calls))
+   second=serp.SerpApiGoogleSearchAdapter(api_key='',cache=cache,transport=lambda *_:self.fail('cache hit must not transport'))
+   self.assertEqual('cache_hit',second.search(query='q',now=now)[1]); self.assertEqual(0,second.request_count)
 if __name__=='__main__': unittest.main()

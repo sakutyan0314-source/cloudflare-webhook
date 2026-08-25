@@ -1,4 +1,4 @@
-"""Fixture-first Market Signal CLI; it has no SERP API connection."""
+"""Market Signal CLI; SerpApi is called only with an explicit live flag."""
 from __future__ import annotations
 import argparse, json, subprocess
 from pathlib import Path
@@ -7,7 +7,7 @@ from ai_recommendation_d1_reader import AiRecommendationD1Reader
 from search_console_affiliate_reader import SearchConsoleAffiliateReader
 from search_console_d1_reader import D1ReadSafetyError, _validate_fixed_select
 from phase2a_candidate_read_cli import DATABASE_NAME, _parse_wrangler_json, _render_fixed_select
-from market_signal_serp_adapter import normalize_serp_response
+from market_signal_serp_adapter import LocalNormalizedSerpCache, SerpApiGoogleSearchAdapter, normalize_serp_response
 from market_signal_report import build_market_signal_report, build_own_site_signal, render_human_report
 
 class MarketSignalReadError(RuntimeError): pass
@@ -32,13 +32,19 @@ def read_own_site(property_uri: str, start: str, end: str, transport: Any) -> tu
     pages, affiliate, articles=AiRecommendationD1Reader(transport).fetch_source(property_uri,"web",start,end)
     return articles,pages,affiliate
 def main(argv: Sequence[str]|None=None)->int:
-    parser=argparse.ArgumentParser(description="Build a read-only market-signal report from a local SERP fixture.")
-    parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture",required=True); parser.add_argument("--own-site-fixture",required=True); parser.add_argument("--format",choices=("summary","json"),default="summary")
+    parser=argparse.ArgumentParser(description="Build a Market Signal report; SERP is fixture-only unless --live-serp is explicit.")
+    parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture"); parser.add_argument("--live-serp",action="store_true"); parser.add_argument("--own-site-fixture",required=True); parser.add_argument("--cache-dir",default=".market-signal-cache"); parser.add_argument("--cache-ttl-seconds",type=int,default=7*24*60*60); parser.add_argument("--format",choices=("summary","json"),default="summary")
     args=parser.parse_args(argv)
     try:
-        fixture=json.loads(Path(args.serp_fixture).read_text()); own=json.loads(Path(args.own_site_fixture).read_text())
-        results=normalize_serp_response(fixture); signal=build_own_site_signal(query=args.query,articles=own["articles"],page_daily=own["page_daily"],affiliate_events=own["affiliate_events"])
-        report=build_market_signal_report(query=args.query,observed_at=args.observed_at,source={"provider":"fixture_only","engine":"google","locale":"ja-JP","region":"JP","requested_result_count":10},serp_results=results,analysis=own["analysis"],own_site_signal=signal,opportunities=own["opportunities"])
+        if args.live_serp == bool(args.serp_fixture): raise MarketSignalReadError("serp_execution_mode_invalid")
+        own=json.loads(Path(args.own_site_fixture).read_text())
+        if args.live_serp:
+            results, mode=SerpApiGoogleSearchAdapter(cache=LocalNormalizedSerpCache(Path(args.cache_dir),ttl_seconds=args.cache_ttl_seconds)).search(query=args.query)
+            provider="serpapi" if mode=="live_request" else "serpapi_cache"
+        else:
+            results=normalize_serp_response(json.loads(Path(args.serp_fixture).read_text())); provider="fixture_only"
+        signal=build_own_site_signal(query=args.query,articles=own["articles"],page_daily=own["page_daily"],affiliate_events=own["affiliate_events"])
+        report=build_market_signal_report(query=args.query,observed_at=args.observed_at,source={"provider":provider,"engine":"google","locale":"ja","region":"jp","requested_result_count":10},serp_results=results,analysis=own["analysis"],own_site_signal=signal,opportunities=own["opportunities"])
     except (OSError,KeyError,ValueError,MarketSignalReadError): print(json.dumps({"schema_version":"market-signal-report-v1","status":"fail","error_class":"market_signal_input_invalid"})); return 1
     print(json.dumps(report,ensure_ascii=False,sort_keys=True) if args.format=="json" else render_human_report(report)); return 0
 if __name__=="__main__": raise SystemExit(main())
