@@ -1,6 +1,7 @@
 """Market Signal CLI; SerpApi is called only with an explicit live flag."""
 from __future__ import annotations
 import argparse, json, subprocess
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from ai_recommendation_d1_reader import AiRecommendationD1Reader
@@ -33,17 +34,24 @@ def read_own_site(property_uri: str, start: str, end: str, transport: Any) -> tu
     return articles,pages,affiliate
 def main(argv: Sequence[str]|None=None)->int:
     parser=argparse.ArgumentParser(description="Build a Market Signal report; SERP is fixture-only unless --live-serp is explicit.")
-    parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture"); parser.add_argument("--live-serp",action="store_true"); parser.add_argument("--own-site-fixture",required=True); parser.add_argument("--cache-dir",default=".market-signal-cache"); parser.add_argument("--cache-ttl-seconds",type=int,default=7*24*60*60); parser.add_argument("--format",choices=("summary","json"),default="summary")
+    parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture"); parser.add_argument("--live-serp",action="store_true"); parser.add_argument("--own-site-fixture"); parser.add_argument("--planning-fixture"); parser.add_argument("--period-start"); parser.add_argument("--period-end"); parser.add_argument("--property-uri",default="https://cloudflare-webhook.tyansaku3325.workers.dev/"); parser.add_argument("--cache-dir",default=".market-signal-cache"); parser.add_argument("--cache-ttl-seconds",type=int,default=7*24*60*60); parser.add_argument("--format",choices=("summary","json"),default="summary")
     args=parser.parse_args(argv)
     try:
         if args.live_serp == bool(args.serp_fixture): raise MarketSignalReadError("serp_execution_mode_invalid")
-        own=json.loads(Path(args.own_site_fixture).read_text())
+        if args.own_site_fixture:
+            own=json.loads(Path(args.own_site_fixture).read_text())
+            articles, pages, affiliate=own["articles"], own["page_daily"], own["affiliate_events"]
+        else:
+            if not args.planning_fixture: raise MarketSignalReadError("planning_fixture_required")
+            own=json.loads(Path(args.planning_fixture).read_text())
+            end=args.period_end or date.today().isoformat(); start=args.period_start or (date.fromisoformat(end)-timedelta(days=13)).isoformat()
+            articles,pages,affiliate=read_own_site(args.property_uri,start,end,FixedSelectTransport())
         if args.live_serp:
             results, mode=SerpApiGoogleSearchAdapter(cache=LocalNormalizedSerpCache(Path(args.cache_dir),ttl_seconds=args.cache_ttl_seconds)).search(query=args.query)
             provider="serpapi" if mode=="live_request" else "serpapi_cache"
         else:
             results=normalize_serp_response(json.loads(Path(args.serp_fixture).read_text())); provider="fixture_only"
-        signal=build_own_site_signal(query=args.query,articles=own["articles"],page_daily=own["page_daily"],affiliate_events=own["affiliate_events"])
+        signal=build_own_site_signal(query=args.query,articles=articles,page_daily=pages,affiliate_events=affiliate)
         report=build_market_signal_report(query=args.query,observed_at=args.observed_at,source={"provider":provider,"engine":"google","locale":"ja","region":"jp","requested_result_count":10},serp_results=results,analysis=own["analysis"],own_site_signal=signal,opportunities=own["opportunities"])
     except (OSError,KeyError,ValueError,MarketSignalReadError): print(json.dumps({"schema_version":"market-signal-report-v1","status":"fail","error_class":"market_signal_input_invalid"})); return 1
     print(json.dumps(report,ensure_ascii=False,sort_keys=True) if args.format=="json" else render_human_report(report)); return 0
