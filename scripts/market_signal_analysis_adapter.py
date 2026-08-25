@@ -26,10 +26,15 @@ class MarketSignalAnalysisAdapter:
         self.limits = provider_config()
         self.last_rejection_code: str | None = None
 
-    def analyze(self, *, query: str, observed_at: str, serp_results: list[Mapping[str, Any]], own_site_signal: Mapping[str, Any]) -> dict[str, Any]:
+    def build_input(self, *, query: str, observed_at: str, serp_results: list[Mapping[str, Any]], own_site_signal: Mapping[str, Any]) -> dict[str, Any]:
+        """The one input-builder contract shared by preflight and live analysis."""
+        return build_market_analysis_input(query=query, observed_at=observed_at, serp_results=serp_results,
+                                           own_site_signal=own_site_signal)
+
+    def analyze_input(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Send an already-validated input exactly once; no retry or fallback."""
         self.last_rejection_code = None
         try:
-            payload = build_market_analysis_input(query=query, observed_at=observed_at, serp_results=serp_results, own_site_signal=own_site_signal)
             response = self._transport.analyze(payload, model_id=self.limits["model_id"], max_input_tokens=MAX_INPUT_TOKENS,
                                                max_output_tokens=MAX_OUTPUT_TOKENS, timeout_seconds=TIMEOUT_SECONDS, store=False, tools=None)
             if not isinstance(response, Mapping):
@@ -52,3 +57,12 @@ class MarketSignalAnalysisAdapter:
             diagnostic = getattr(error, "diagnostic", None)
             self.last_rejection_code = code if isinstance(code, str) else "provider_failure"
             raise MarketSignalAnalysisAdapterError("market analysis request failed", code=self.last_rejection_code, diagnostic=diagnostic) from error
+
+    def analyze(self, *, query: str, observed_at: str, serp_results: list[Mapping[str, Any]], own_site_signal: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            payload = self.build_input(query=query, observed_at=observed_at, serp_results=serp_results,
+                                       own_site_signal=own_site_signal)
+        except MarketAnalysisError as error:
+            self.last_rejection_code = "schema_or_policy_failure"
+            raise MarketSignalAnalysisAdapterError("market analysis was rejected", code=self.last_rejection_code) from error
+        return self.analyze_input(payload)

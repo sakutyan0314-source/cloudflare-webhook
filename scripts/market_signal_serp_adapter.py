@@ -98,12 +98,14 @@ class SerpApiGoogleSearchAdapter:
     def __init__(self, *, api_key: str | None = None, transport: Callable[[str, float], tuple[int, bytes]] = _http_get, timeout_seconds: float = 20.0, cache: LocalNormalizedSerpCache | None = None) -> None:
         self._api_key = (api_key if api_key is not None else os.environ.get("SERPAPI_API_KEY", "")).strip()
         self._transport, self._timeout, self._cache, self.request_count = transport, timeout_seconds, cache, 0
-    def search(self, *, query: str, locale: str = "ja", region: str = "jp", result_count: int = MAX_SERP_RESULTS, now: datetime | None = None) -> tuple[list[dict[str, Any]], str]:
+    def search(self, *, query: str, locale: str = "ja", region: str = "jp", result_count: int = MAX_SERP_RESULTS, now: datetime | None = None, cache_only: bool = False) -> tuple[list[dict[str, Any]], str]:
         if result_count != MAX_SERP_RESULTS: raise SerpApiSafetyError("result_count_invalid")
         current=now or datetime.now(timezone.utc); key=serp_cache_key(query=query,locale=locale,region=region,result_count=result_count)
         if self._cache:
             cached=self._cache.get(key,now=current)
             if cached is not None: return cached, "cache_hit"
+        if cache_only:
+            raise SerpApiSafetyError("cache_miss")
         if not self._api_key: raise SerpApiSafetyError("api_key_missing")
         if self.request_count != 0: raise SerpApiSafetyError("request_limit_exceeded")
         self.request_count=1
