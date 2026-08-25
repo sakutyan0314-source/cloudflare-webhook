@@ -1,0 +1,45 @@
+"""One-call provider-neutral boundary for Market Analysis v1."""
+from __future__ import annotations
+
+from typing import Any, Mapping, Protocol
+
+from market_signal_analysis import (MAX_INPUT_TOKENS, MAX_OUTPUT_TOKENS, TIMEOUT_SECONDS, MarketAnalysisError,
+                                    build_market_analysis_input, provider_config, validate_market_analysis)
+
+
+class MarketSignalAnalysisAdapterError(RuntimeError):
+    """Sanitized analysis failure; never exposes provider response text."""
+
+
+class MarketSignalAnalysisTransport(Protocol):
+    def analyze(self, payload: Mapping[str, Any], *, model_id: str, max_input_tokens: int, max_output_tokens: int,
+                timeout_seconds: int, store: bool, tools: None) -> Mapping[str, Any]: ...
+
+
+class MarketSignalAnalysisAdapter:
+    def __init__(self, transport: MarketSignalAnalysisTransport):
+        self._transport = transport
+        self.limits = provider_config()
+        self.last_rejection_code: str | None = None
+
+    def analyze(self, *, query: str, observed_at: str, serp_results: list[Mapping[str, Any]], own_site_signal: Mapping[str, Any]) -> dict[str, Any]:
+        self.last_rejection_code = None
+        try:
+            payload = build_market_analysis_input(query=query, observed_at=observed_at, serp_results=serp_results, own_site_signal=own_site_signal)
+            response = self._transport.analyze(payload, model_id=self.limits["model_id"], max_input_tokens=MAX_INPUT_TOKENS,
+                                               max_output_tokens=MAX_OUTPUT_TOKENS, timeout_seconds=TIMEOUT_SECONDS, store=False, tools=None)
+            if not isinstance(response, Mapping):
+                raise MarketSignalAnalysisAdapterError("provider response is not a JSON object")
+            return validate_market_analysis(response, payload)
+        except TimeoutError as error:
+            self.last_rejection_code = "timeout"
+            raise MarketSignalAnalysisAdapterError("market analysis timed out") from error
+        except MarketAnalysisError as error:
+            self.last_rejection_code = "schema_or_policy_failure"
+            raise MarketSignalAnalysisAdapterError("market analysis was rejected") from error
+        except MarketSignalAnalysisAdapterError:
+            self.last_rejection_code = self.last_rejection_code or "provider_or_input_failure"
+            raise
+        except Exception as error:
+            self.last_rejection_code = "provider_failure"
+            raise MarketSignalAnalysisAdapterError("market analysis request failed") from error

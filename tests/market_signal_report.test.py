@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 ROOT=pathlib.Path(__file__).parents[1]
 def load(name):
  spec=importlib.util.spec_from_file_location(name,ROOT/'scripts'/f'{name}.py'); module=importlib.util.module_from_spec(spec); assert spec and spec.loader; sys.modules[name]=module; spec.loader.exec_module(module); return module
-load('search_console_improvement_candidates'); load('topic_candidate'); serp=load('market_signal_serp_adapter'); report=load('market_signal_report')
+load('search_console_improvement_candidates'); load('topic_candidate'); serp=load('market_signal_serp_adapter'); report=load('market_signal_report'); load('market_signal_analysis'); load('market_signal_analysis_adapter'); load('openai_market_signal_analysis_adapter')
 load('search_console_collector'); load('search_console_d1_reader'); load('ai_recommendation_d1_reader'); load('search_console_affiliate_reader'); load('search_console_improvement_candidate_review'); load('phase2a_candidate_read_cli'); cli=load('market_signal_report_cli')
 FIX=json.loads((ROOT/'tests/fixtures/market-signal-serp-fixture.json').read_text())
 class TestMarketSignal(unittest.TestCase):
@@ -29,6 +29,13 @@ class TestMarketSignal(unittest.TestCase):
   with redirect_stdout(output):
    self.assertEqual(0,cli.main(['--query','Microsoft 365 Copilot エージェント','--observed-at','2026-08-25T00:00:00Z','--serp-fixture','tests/fixtures/market-signal-serp-fixture.json','--own-site-fixture','tests/fixtures/market-signal-own-site-fixture.json','--format','json']))
   self.assertIn('market-signal-report-v1',output.getvalue())
+ def test_fixture_analysis_integrates_validated_drafts_without_provider_call(self):
+  response={'schema_version':'market-signal-analysis-v1','query':'Microsoft 365 Copilot エージェント','common_intents':['how'],'common_angles':['導入'],'uncovered_questions':[{'question':'棚卸しの手順','classification':'hypothesis'}],'own_site_gap_assessment':{'classification':'possible_gap','rationale':'metadata only'},'candidate_drafts':[{'topic':'Copilot棚卸し','reason':'metadata','market_evidence':'SERP metadata','common_intent':'how','own_site_gap':'possible_gap','target_audience':'管理者','user_problem':'手順不明','monetization_relevance':'not_evaluated','duplicate_risk':'low','confidence':'low','requires_human_review':True}],'confidence':'low','requires_human_review':True,'content_generation_authorized':False,'publication_authorized':False,'execution_authorized':False}
+  with tempfile.TemporaryDirectory() as directory:
+   path=pathlib.Path(directory)/'analysis.json'; path.write_text(json.dumps(response))
+   output=io.StringIO()
+   with redirect_stdout(output): self.assertEqual(0,cli.main(['--query','Microsoft 365 Copilot エージェント','--observed-at','2026-08-25T00:00:00Z','--serp-fixture','tests/fixtures/market-signal-serp-fixture.json','--own-site-fixture','tests/fixtures/market-signal-own-site-fixture.json','--analysis-response-fixture',str(path),'--format','json']))
+   parsed=json.loads(output.getvalue()); self.assertEqual('how',parsed['candidate_drafts'][0]['common_intent']); self.assertTrue(parsed['candidate_drafts'][0]['requires_human_review'])
  def test_own_site_transport_is_fixed_select_and_rejects_writes(self):
   class Done:
    returncode=0

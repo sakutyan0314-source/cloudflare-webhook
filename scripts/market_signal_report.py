@@ -52,7 +52,9 @@ def build_candidate_drafts(opportunities: Sequence[Mapping[str, Any]]) -> list[d
         if not isinstance(item, Mapping): raise MarketSignalError("candidate_draft_invalid")
         required = ("topic", "reason", "market_evidence", "own_site_gap", "expected_search_intent", "target_audience", "monetization_relevance", "duplicate_risk")
         if not all(isinstance(item.get(key), str) and item[key].strip() for key in required) or item["duplicate_risk"] not in {"none", "low", "medium", "high"}: raise MarketSignalError("candidate_draft_invalid")
-        output.append({**{key: item[key].strip() for key in required}, "requires_human_review": True, "content_generation_authorized": False, "publication_authorized": False, "execution_authorized": False})
+        optional = ("common_intent", "user_problem", "confidence")
+        if any(key in item and (not isinstance(item[key], str) or not item[key].strip()) for key in optional): raise MarketSignalError("candidate_draft_invalid")
+        output.append({**{key: item[key].strip() for key in required}, **{key: item[key].strip() for key in optional if key in item}, "requires_human_review": True, "content_generation_authorized": False, "publication_authorized": False, "execution_authorized": False})
     return output
 
 def build_market_signal_report(*, query: str, observed_at: str, source: Mapping[str, Any], serp_results: Sequence[Mapping[str, Any]], analysis: Mapping[str, Any], own_site_signal: Mapping[str, Any], opportunities: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
