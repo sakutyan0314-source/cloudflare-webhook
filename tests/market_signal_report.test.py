@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 ROOT=pathlib.Path(__file__).parents[1]
 def load(name):
  spec=importlib.util.spec_from_file_location(name,ROOT/'scripts'/f'{name}.py'); module=importlib.util.module_from_spec(spec); assert spec and spec.loader; sys.modules[name]=module; spec.loader.exec_module(module); return module
-load('search_console_improvement_candidates'); load('topic_candidate'); serp=load('market_signal_serp_adapter'); report=load('market_signal_report'); load('market_signal_analysis'); load('market_signal_analysis_adapter'); load('openai_market_signal_analysis_adapter')
+load('search_console_improvement_candidates'); load('topic_candidate'); serp=load('market_signal_serp_adapter'); report=load('market_signal_report'); load('market_signal_analysis'); load('market_signal_analysis_adapter'); openai=load('openai_market_signal_analysis_adapter')
 load('search_console_collector'); load('search_console_d1_reader'); load('ai_recommendation_d1_reader'); load('search_console_affiliate_reader'); load('search_console_improvement_candidate_review'); load('phase2a_candidate_read_cli'); cli=load('market_signal_report_cli')
 FIX=json.loads((ROOT/'tests/fixtures/market-signal-serp-fixture.json').read_text())
 class TestMarketSignal(unittest.TestCase):
@@ -36,6 +36,16 @@ class TestMarketSignal(unittest.TestCase):
    output=io.StringIO()
    with redirect_stdout(output): self.assertEqual(0,cli.main(['--query','Microsoft 365 Copilot エージェント','--observed-at','2026-08-25T00:00:00Z','--serp-fixture','tests/fixtures/market-signal-serp-fixture.json','--own-site-fixture','tests/fixtures/market-signal-own-site-fixture.json','--analysis-response-fixture',str(path),'--format','json']))
    parsed=json.loads(output.getvalue()); self.assertEqual('how',parsed['candidate_drafts'][0]['common_intent']); self.assertTrue(parsed['candidate_drafts'][0]['requires_human_review'])
+ def test_live_analysis_failure_outputs_only_safe_structure_diagnostic(self):
+  original=cli.OpenAiMarketSignalAnalysisTransport
+  class Failing:
+   def analyze(self,*_args,**_kwargs): raise openai.OpenAiMarketSignalAnalysisResponseError('refusal',{'response_status':'completed','output_item_count':1,'output_item_types':['message'],'message_count':1,'content_item_types':['refusal'],'output_text_count':0,'refusal_present':True,'incomplete_reason':None})
+  cli.OpenAiMarketSignalAnalysisTransport=lambda:Failing()
+  output=io.StringIO()
+  try:
+   with redirect_stdout(output): self.assertEqual(1,cli.main(['--query','Microsoft 365 Copilot エージェント','--observed-at','2026-08-25T00:00:00Z','--serp-fixture','tests/fixtures/market-signal-serp-fixture.json','--own-site-fixture','tests/fixtures/market-signal-own-site-fixture.json','--live-analysis','--format','json']))
+  finally: cli.OpenAiMarketSignalAnalysisTransport=original
+  value=json.loads(output.getvalue()); self.assertEqual('refusal',value['failure_classification']); self.assertNotIn('response_id',str(value)); self.assertNotIn('must-not-appear',str(value))
  def test_own_site_transport_is_fixed_select_and_rejects_writes(self):
   class Done:
    returncode=0

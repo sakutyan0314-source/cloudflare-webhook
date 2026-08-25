@@ -15,6 +15,13 @@ class OpenAiMarketSignalAnalysisError(RuntimeError):
     """Safe provider error without a credential or raw provider response."""
 
 
+class OpenAiMarketSignalAnalysisResponseError(OpenAiMarketSignalAnalysisError):
+    """Fail-closed response shape with only safe structural metadata."""
+    def __init__(self, code: str, diagnostic: Mapping[str, Any]):
+        super().__init__("OpenAI market analysis response was rejected")
+        self.code, self.diagnostic = code, dict(diagnostic)
+
+
 _TEXT = {"type": "string"}
 _CANDIDATE = {"type": "object", "additionalProperties": False,
     "required": ["topic", "reason", "market_evidence", "common_intent", "own_site_gap", "target_audience", "user_problem", "monetization_relevance", "duplicate_risk", "confidence", "requires_human_review"],
@@ -41,12 +48,77 @@ def build_responses_payload(payload: Mapping[str, Any], *, model_id: str, max_ou
             "text": {"format": {"type": "json_schema", "name": "market_signal_analysis", "strict": True, "schema": RESPONSE_SCHEMA}}}
 
 
+def response_structure_diagnostic(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Return only shape metadata; never text, IDs, input, headers, or response body."""
+    output = response.get("output")
+    output_types, content_types, message_count, output_text_count, refusal_present = [], [], 0, 0, False
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, Mapping):
+                output_types.append("invalid")
+                continue
+            item_type = item.get("type")
+            output_types.append(item_type if isinstance(item_type, str) else "invalid")
+            if item_type != "message":
+                continue
+            message_count += 1
+            content = item.get("content")
+            if not isinstance(content, list):
+                content_types.append("invalid")
+                continue
+            for part in content:
+                if not isinstance(part, Mapping):
+                    content_types.append("invalid")
+                    continue
+                part_type = part.get("type")
+                content_types.append(part_type if isinstance(part_type, str) else "invalid")
+                output_text_count += int(part_type == "output_text")
+                refusal_present = refusal_present or part_type == "refusal"
+    incomplete = response.get("incomplete_details")
+    reason = incomplete.get("reason") if isinstance(incomplete, Mapping) and isinstance(incomplete.get("reason"), str) else None
+    return {"response_status": response.get("status") if isinstance(response.get("status"), str) else None,
+            "incomplete_reason": reason, "output_item_count": len(output) if isinstance(output, list) else None,
+            "output_item_types": output_types, "message_count": message_count, "content_item_types": content_types,
+            "output_text_count": output_text_count, "refusal_present": refusal_present}
+
+
 def _output_text(response: Mapping[str, Any]) -> str:
-    if response.get("status") != "completed" or not isinstance(response.get("output"), list):
-        raise OpenAiMarketSignalAnalysisError("provider response structure is invalid")
-    texts = [part["text"] for item in response["output"] if isinstance(item, Mapping) and item.get("type") == "message" and item.get("role") == "assistant" and isinstance(item.get("content"), list) for part in item["content"] if isinstance(part, Mapping) and part.get("type") == "output_text" and isinstance(part.get("text"), str)]
-    if len(texts) != 1 or not texts[0]:
-        raise OpenAiMarketSignalAnalysisError("provider response structure is invalid")
+    diagnostic = response_structure_diagnostic(response)
+    status = diagnostic["response_status"]
+    if status == "incomplete":
+        raise OpenAiMarketSignalAnalysisResponseError("incomplete", diagnostic)
+    if status != "completed":
+        raise OpenAiMarketSignalAnalysisResponseError("non_completed_status", diagnostic)
+    output = response.get("output")
+    if not isinstance(output, list):
+        raise OpenAiMarketSignalAnalysisResponseError("missing_output", diagnostic)
+    texts: list[str] = []
+    for item in output:
+        if not isinstance(item, Mapping):
+            raise OpenAiMarketSignalAnalysisResponseError("unknown_output_type", diagnostic)
+        item_type = item.get("type")
+        if item_type == "reasoning":
+            continue
+        if item_type != "message" or item.get("role") != "assistant":
+            raise OpenAiMarketSignalAnalysisResponseError("unknown_output_type", diagnostic)
+        content = item.get("content")
+        if not isinstance(content, list):
+            raise OpenAiMarketSignalAnalysisResponseError("unknown_content_type", diagnostic)
+        for part in content:
+            if not isinstance(part, Mapping):
+                raise OpenAiMarketSignalAnalysisResponseError("unknown_content_type", diagnostic)
+            part_type = part.get("type")
+            if part_type == "refusal":
+                raise OpenAiMarketSignalAnalysisResponseError("refusal", diagnostic)
+            if part_type != "output_text" or not isinstance(part.get("text"), str):
+                raise OpenAiMarketSignalAnalysisResponseError("unknown_content_type", diagnostic)
+            texts.append(part["text"])
+    if len(texts) == 0:
+        raise OpenAiMarketSignalAnalysisResponseError("missing_output_text", diagnostic)
+    if len(texts) != 1:
+        raise OpenAiMarketSignalAnalysisResponseError("ambiguous_output_text", diagnostic)
+    if not texts[0]:
+        raise OpenAiMarketSignalAnalysisResponseError("missing_output_text", diagnostic)
     return texts[0]
 
 
@@ -93,7 +165,7 @@ class OpenAiMarketSignalAnalysisTransport:
         request = Request("https://api.openai.com/v1/responses", data=body, method="POST", headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"})
         try:
             with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310 fixed API URL
-                return json.loads(_output_text(json.loads(response.read().decode("utf-8"))))
+                parsed = json.loads(response.read().decode("utf-8"))
         except TimeoutError:
             raise
         except HTTPError as error:
@@ -101,3 +173,14 @@ class OpenAiMarketSignalAnalysisTransport:
             raise OpenAiMarketSignalAnalysisError("OpenAI market analysis HTTP request failed") from error
         except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError, OpenAiMarketSignalAnalysisError) as error:
             raise OpenAiMarketSignalAnalysisError("OpenAI market analysis request failed") from error
+        if not isinstance(parsed, Mapping):
+            raise OpenAiMarketSignalAnalysisError("OpenAI market analysis response was rejected")
+        diagnostic = response_structure_diagnostic(parsed)
+        self.last_diagnostic = diagnostic
+        try:
+            return json.loads(_output_text(parsed))
+        except OpenAiMarketSignalAnalysisResponseError as error:
+            self.last_diagnostic = error.diagnostic
+            raise
+        except json.JSONDecodeError as error:
+            raise OpenAiMarketSignalAnalysisResponseError("malformed_json", diagnostic) from error

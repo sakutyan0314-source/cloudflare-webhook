@@ -10,7 +10,7 @@ from search_console_d1_reader import D1ReadSafetyError, _validate_fixed_select
 from phase2a_candidate_read_cli import DATABASE_NAME, _parse_wrangler_json, _render_fixed_select
 from market_signal_serp_adapter import LocalNormalizedSerpCache, SerpApiGoogleSearchAdapter, normalize_serp_response
 from market_signal_report import build_market_signal_report, build_own_site_signal, render_human_report
-from market_signal_analysis_adapter import MarketSignalAnalysisAdapter
+from market_signal_analysis_adapter import MarketSignalAnalysisAdapter, MarketSignalAnalysisAdapterError
 from openai_market_signal_analysis_adapter import OpenAiMarketSignalAnalysisTransport
 
 class MarketSignalReadError(RuntimeError): pass
@@ -66,6 +66,11 @@ def main(argv: Sequence[str]|None=None)->int:
         else:
             analysis, opportunities = own["analysis"], own["opportunities"]
         report=build_market_signal_report(query=args.query,observed_at=args.observed_at,source={"provider":provider,"engine":"google","locale":"ja","region":"jp","requested_result_count":10},serp_results=results,analysis=analysis,own_site_signal=signal,opportunities=opportunities)
+    except MarketSignalAnalysisAdapterError as error:
+        output={"schema_version":"market-signal-report-v1","status":"fail","error_class":"market_signal_analysis_failed"}
+        if isinstance(error.code,str): output["failure_classification"]=error.code
+        if isinstance(error.diagnostic,Mapping): output["response_structure_diagnostic"]=error.diagnostic
+        print(json.dumps(output,ensure_ascii=False,sort_keys=True)); return 1
     except (OSError,KeyError,ValueError,MarketSignalReadError): print(json.dumps({"schema_version":"market-signal-report-v1","status":"fail","error_class":"market_signal_input_invalid"})); return 1
     print(json.dumps(report,ensure_ascii=False,sort_keys=True) if args.format=="json" else render_human_report(report)); return 0
 if __name__=="__main__": raise SystemExit(main())

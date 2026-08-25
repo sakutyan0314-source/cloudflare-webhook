@@ -58,5 +58,18 @@ class TestMarketSignalAnalysis(unittest.TestCase):
         diagnostic=openai.safe_http_error_diagnostic(error)
         self.assertEqual(400,diagnostic['http_status']); self.assertEqual('invalid_request_error',diagnostic['error_type']); self.assertEqual('invalid_json_schema',diagnostic['error_code'])
         self.assertNotIn('should-not-appear',diagnostic['error_message']); self.assertLessEqual(len(diagnostic['error_message']),240); self.assertNotIn('raw',diagnostic)
+    def test_response_extraction_handles_reasoning_then_message_and_classifies_safe_failures(self):
+        success={'status':'completed','response_id':'must-not-appear','output':[{'type':'reasoning'},{'type':'message','role':'assistant','content':[{'type':'output_text','text':'{"ok":true}'}]}]}
+        self.assertEqual('{"ok":true}',openai._output_text(success)); diagnostic=openai.response_structure_diagnostic(success)
+        self.assertEqual(['reasoning','message'],diagnostic['output_item_types']); self.assertNotIn('response_id',diagnostic); self.assertNotIn('ok',str(diagnostic))
+        cases=[({'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},'output':[]},'incomplete'),({'status':'failed','output':[]},'non_completed_status'),({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'refusal','refusal':'must-not-appear'}]}]},'refusal'),({'status':'completed','output':[{'type':'message','role':'assistant','content':[]}]},'missing_output_text'),({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'{}'},{'type':'output_text','text':'{}'}]}]},'ambiguous_output_text'),({'status':'completed','output':[{'type':'tool_call'}]},'unknown_output_type'),({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_image'}]}]},'unknown_content_type')]
+        for value,code in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(openai.OpenAiMarketSignalAnalysisResponseError) as error: openai._output_text(value)
+                self.assertEqual(code,error.exception.code); self.assertNotIn('must-not-appear',str(error.exception.diagnostic))
+    def test_malformed_json_after_one_output_text_is_classified(self):
+        diagnostic=openai.response_structure_diagnostic({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'not-json'}]}]})
+        with self.assertRaises(json.JSONDecodeError): json.loads(openai._output_text({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'not-json'}]}]}))
+        self.assertEqual(1,diagnostic['output_text_count'])
 
 if __name__=='__main__': unittest.main()

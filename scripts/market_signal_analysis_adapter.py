@@ -9,6 +9,10 @@ from market_signal_analysis import (MAX_INPUT_TOKENS, MAX_OUTPUT_TOKENS, TIMEOUT
 
 class MarketSignalAnalysisAdapterError(RuntimeError):
     """Sanitized analysis failure; never exposes provider response text."""
+    def __init__(self, message: str, *, code: str | None = None, diagnostic: Mapping[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.diagnostic = dict(diagnostic) if isinstance(diagnostic, Mapping) else None
 
 
 class MarketSignalAnalysisTransport(Protocol):
@@ -41,5 +45,7 @@ class MarketSignalAnalysisAdapter:
             self.last_rejection_code = self.last_rejection_code or "provider_or_input_failure"
             raise
         except Exception as error:
-            self.last_rejection_code = "provider_failure"
-            raise MarketSignalAnalysisAdapterError("market analysis request failed") from error
+            code = getattr(error, "code", None)
+            diagnostic = getattr(error, "diagnostic", None)
+            self.last_rejection_code = code if isinstance(code, str) else "provider_failure"
+            raise MarketSignalAnalysisAdapterError("market analysis request failed", code=self.last_rejection_code, diagnostic=diagnostic) from error
