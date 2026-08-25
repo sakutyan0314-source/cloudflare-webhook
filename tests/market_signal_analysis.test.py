@@ -1,4 +1,5 @@
-import importlib.util, json, pathlib, sys, unittest
+import importlib.util, io, json, pathlib, sys, unittest
+from urllib.error import HTTPError
 
 ROOT = pathlib.Path(__file__).parents[1]
 def load(name):
@@ -47,6 +48,15 @@ class TestMarketSignalAnalysis(unittest.TestCase):
         payload=openai.build_responses_payload({'safe':True},model_id='gpt-5.6-terra',max_output_tokens=600,store=False,tools=None)
         self.assertFalse(payload['store']); self.assertNotIn('tools',payload); self.assertTrue(payload['text']['format']['strict'])
         self.assertIn('possible_gap',json.dumps(payload)); self.assertIn('hypothesis',json.dumps(payload))
+        serialized=json.dumps(payload['text']['format']['schema'])
+        for unsupported in ('minLength','maxLength','minItems','maxItems','const'): self.assertNotIn(unsupported,serialized)
+        self.assertEqual({'effort':'low'},payload['reasoning'])
         with self.assertRaises(openai.OpenAiMarketSignalAnalysisError): openai.build_responses_payload({},model_id='wrong',max_output_tokens=600,store=False,tools=None)
+    def test_safe_http_diagnostic_truncates_and_redacts_without_retaining_raw_response(self):
+        message='token: should-not-appear ' + ('x'*400)
+        error=HTTPError('https://api.openai.com/v1/responses',400,'bad',None,io.BytesIO(json.dumps({'error':{'type':'invalid_request_error','code':'invalid_json_schema','message':message}}).encode()))
+        diagnostic=openai.safe_http_error_diagnostic(error)
+        self.assertEqual(400,diagnostic['http_status']); self.assertEqual('invalid_request_error',diagnostic['error_type']); self.assertEqual('invalid_json_schema',diagnostic['error_code'])
+        self.assertNotIn('should-not-appear',diagnostic['error_message']); self.assertLessEqual(len(diagnostic['error_message']),240); self.assertNotIn('raw',diagnostic)
 
 if __name__=='__main__': unittest.main()
