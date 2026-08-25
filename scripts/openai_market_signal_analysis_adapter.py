@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import re
+import socket
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,13 +15,45 @@ from market_signal_analysis import ANALYSIS_SCHEMA_VERSION, MODEL_ID
 
 class OpenAiMarketSignalAnalysisError(RuntimeError):
     """Safe provider error without a credential or raw provider response."""
+    def __init__(self, message: str, *, code: str | None = None, diagnostic: Mapping[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.diagnostic = dict(diagnostic) if isinstance(diagnostic, Mapping) else None
 
 
 class OpenAiMarketSignalAnalysisResponseError(OpenAiMarketSignalAnalysisError):
     """Fail-closed response shape with only safe structural metadata."""
     def __init__(self, code: str, diagnostic: Mapping[str, Any]):
-        super().__init__("OpenAI market analysis response was rejected")
-        self.code, self.diagnostic = code, dict(diagnostic)
+        super().__init__("OpenAI market analysis response was rejected", code=code, diagnostic=diagnostic)
+
+
+class OpenAiMarketSignalAnalysisTransportError(OpenAiMarketSignalAnalysisError):
+    """Value-free transport outcome; an attempted delivery is never presumed absent."""
+    _CODES = {"connection_reset", "connection_closed", "response_read_failed", "transport_exception", "delivery_state_unknown"}
+
+    def __init__(self, code: str, *, delivery_state: str):
+        if code not in self._CODES:
+            code = "delivery_state_unknown"
+        if delivery_state not in {"known", "unknown"}:
+            delivery_state = "unknown"
+        super().__init__("OpenAI market analysis transport failed", code=code,
+                         diagnostic={"delivery_state": delivery_state})
+
+
+def _local_diagnostic(*, delivery_state: str) -> dict[str, Any]:
+    return {"delivery_state": delivery_state}
+
+
+def _transport_error_code(error: BaseException) -> str:
+    if isinstance(error, (http.client.RemoteDisconnected, ConnectionAbortedError)):
+        return "connection_closed"
+    if isinstance(error, ConnectionResetError):
+        return "connection_reset"
+    if isinstance(error, (UnicodeDecodeError, json.JSONDecodeError)):
+        return "response_read_failed"
+    if isinstance(error, (URLError, OSError, socket.error)):
+        return "transport_exception"
+    return "delivery_state_unknown"
 
 
 _TEXT = {"type": "string"}
@@ -76,7 +110,7 @@ def response_structure_diagnostic(response: Mapping[str, Any]) -> dict[str, Any]
                 refusal_present = refusal_present or part_type == "refusal"
     incomplete = response.get("incomplete_details")
     reason = incomplete.get("reason") if isinstance(incomplete, Mapping) and isinstance(incomplete.get("reason"), str) else None
-    return {"response_status": response.get("status") if isinstance(response.get("status"), str) else None,
+    return {"delivery_state": "known", "response_status": response.get("status") if isinstance(response.get("status"), str) else None,
             "incomplete_reason": reason, "output_item_count": len(output) if isinstance(output, list) else None,
             "output_item_types": output_types, "message_count": message_count, "content_item_types": content_types,
             "output_text_count": output_text_count, "refusal_present": refusal_present}
@@ -134,7 +168,7 @@ def _safe_error_text(value: object, *, maximum: int) -> str | None:
 
 def safe_http_error_diagnostic(error: HTTPError) -> dict[str, Any]:
     """Extract a bounded, value-free provider diagnostic without retaining its body."""
-    output: dict[str, Any] = {"http_status": int(error.code)}
+    output: dict[str, Any] = {"http_status": int(error.code), "delivery_state": "known"}
     try:
         raw = error.read(4096)
         parsed = json.loads(raw.decode("utf-8"))
@@ -154,18 +188,29 @@ class OpenAiMarketSignalAnalysisTransport:
     def __init__(self, api_key: str | None = None):
         self._api_key = (api_key if api_key is not None else os.environ.get("AI_RECOMMENDATION_OPENAI_API_KEY", "")).strip()
         if not self._api_key:
-            raise OpenAiMarketSignalAnalysisError("OpenAI market analysis credential is unavailable")
+            raise OpenAiMarketSignalAnalysisError("OpenAI market analysis credential is unavailable", code="credential_error",
+                                                  diagnostic=_local_diagnostic(delivery_state="not_attempted"))
         self.last_diagnostic: dict[str, Any] | None = None
 
     def analyze(self, payload: Mapping[str, Any], *, model_id: str, max_input_tokens: int, max_output_tokens: int, timeout_seconds: int, store: bool, tools: None) -> Mapping[str, Any]:
         if max_input_tokens != 1800 or timeout_seconds != 20:
-            raise OpenAiMarketSignalAnalysisError("provider limits are invalid")
+            raise OpenAiMarketSignalAnalysisError("provider limits are invalid", code="provider_configuration_error",
+                                                  diagnostic=_local_diagnostic(delivery_state="not_attempted"))
         self.last_diagnostic = None
-        body = json.dumps(build_responses_payload(payload, model_id=model_id, max_output_tokens=max_output_tokens, store=store, tools=tools), separators=(",", ":")).encode()
+        try:
+            body = json.dumps(build_responses_payload(payload, model_id=model_id, max_output_tokens=max_output_tokens, store=store, tools=tools), separators=(",", ":")).encode()
+        except OpenAiMarketSignalAnalysisError as error:
+            raise OpenAiMarketSignalAnalysisError("provider configuration is invalid", code="provider_configuration_error",
+                                                  diagnostic=_local_diagnostic(delivery_state="not_attempted")) from error
         request = Request("https://api.openai.com/v1/responses", data=body, method="POST", headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"})
         try:
             with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310 fixed API URL
-                parsed = json.loads(response.read().decode("utf-8"))
+                try:
+                    raw = response.read()
+                except TimeoutError:
+                    raise
+                except Exception as error:
+                    raise OpenAiMarketSignalAnalysisTransportError("response_read_failed", delivery_state="unknown") from error
         except TimeoutError:
             raise
         except HTTPError as error:
@@ -173,10 +218,16 @@ class OpenAiMarketSignalAnalysisTransport:
             raise OpenAiMarketSignalAnalysisResponseError(
                 "http_error", self.last_diagnostic
             ) from error
-        except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError, OpenAiMarketSignalAnalysisError) as error:
-            raise OpenAiMarketSignalAnalysisError("OpenAI market analysis request failed") from error
+        except OpenAiMarketSignalAnalysisTransportError:
+            raise
+        except Exception as error:
+            raise OpenAiMarketSignalAnalysisTransportError(_transport_error_code(error), delivery_state="unknown") from error
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise OpenAiMarketSignalAnalysisTransportError("response_read_failed", delivery_state="known") from error
         if not isinstance(parsed, Mapping):
-            raise OpenAiMarketSignalAnalysisError("OpenAI market analysis response was rejected")
+            raise OpenAiMarketSignalAnalysisTransportError("response_read_failed", delivery_state="known")
         diagnostic = response_structure_diagnostic(parsed)
         self.last_diagnostic = diagnostic
         try:
