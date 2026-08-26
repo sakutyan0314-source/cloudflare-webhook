@@ -44,6 +44,21 @@ def cached_results():
     ]
 
 
+def valid_analysis():
+    return {"schema_version": "market-signal-analysis-v1", "query": QUERY, "common_intents": ["how"],
+            "common_angles": ["導入"],
+            "uncovered_questions": [{"question": "棚卸しの進め方", "classification": "hypothesis"}],
+            "own_site_gap_assessment": {"classification": "cluster_sibling", "rationale": "既存記事と隣接する。"},
+            "candidate_drafts": [{"topic": "Copilot エージェントの棚卸し", "reason": "metadata only",
+                                  "market_evidence": "SERP metadata", "common_intent": "how",
+                                  "own_site_gap": "cluster_sibling", "target_audience": "管理者",
+                                  "user_problem": "手順不明", "monetization_relevance": "not_evaluated",
+                                  "duplicate_risk": "low", "confidence": "low", "requires_human_review": True}],
+            "confidence": "low", "requires_human_review": True,
+            "content_generation_authorized": False, "publication_authorized": False,
+            "execution_authorized": False}
+
+
 class MarketAnalysisPreflight(unittest.TestCase):
     def _args(self, cache_dir):
         return [
@@ -112,6 +127,44 @@ class MarketAnalysisPreflight(unittest.TestCase):
         self.assertEqual("query_invalid", value["failure_rule"])
         self.assertEqual("query", value["field_name"])
         self.assertNotIn(QUERY, json.dumps(value, ensure_ascii=False))
+
+    def test_identity_guard_uses_one_cache_only_context_before_one_analysis_call(self):
+        original_read, original_transport = cli.read_own_site, cli.OpenAiMarketSignalAnalysisTransport
+        calls = []
+
+        class Transport:
+            def analyze(self, *_args, **_kwargs):
+                calls.append("one")
+                return valid_analysis()
+
+        cli.read_own_site = lambda *_args: ([{"article_id": 40, "title": "Microsoft 365 Copilot エージェント導入ガバナンス",
+                                                "description": "権限と棚卸し", "category": "security-governance"}], [], [])
+        cli.OpenAiMarketSignalAnalysisTransport = lambda: Transport()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                cache = serp.LocalNormalizedSerpCache(pathlib.Path(directory), ttl_seconds=604800)
+                cache.put(serp.serp_cache_key(query=QUERY, locale="ja", region="jp", result_count=10), cached_results(),
+                          now=datetime.now(timezone.utc))
+                args = self._args(directory)
+                args.remove("--analysis-preflight")
+                args.extend(["--live-analysis", "--preflight-to-live-identity-guard"])
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(0, cli.main(args))
+                value = json.loads(output.getvalue())
+        finally:
+            cli.read_own_site, cli.OpenAiMarketSignalAnalysisTransport = original_read, original_transport
+        self.assertEqual(["one"], calls)
+        self.assertEqual("pass", value["preflight_to_live_identity_guard"]["status"])
+        self.assertTrue(value["preflight_to_live_identity_guard"]["analysis_input_fingerprint"].startswith("market_signal_analysis_input_"))
+
+    def test_identity_mismatch_stops_before_provider(self):
+        one = {"schema_version": "market-signal-analysis-input-v1", "query": "one"}
+        two = {"schema_version": "market-signal-analysis-input-v1", "query": "two"}
+        with self.assertRaises(cli.MarketSignalPreflightError) as error:
+            cli._verify_preflight_live_identity(one, two)
+        self.assertEqual("preflight_to_live_identity", error.exception.stage)
+        self.assertEqual("analysis_input_fingerprint_mismatch", str(error.exception.error))
 
 
 if __name__ == "__main__":

@@ -67,6 +67,7 @@ _RULE_FIELDS = {
     "wrangler_read_failed": ("own_site_d1", "fixed SELECT response", "unavailable"),
     "wrangler_response_invalid": ("own_site_d1", "single read-only result", "invalid"),
     "unexpected_d1_write": ("own_site_d1", "changed_db=false / rows_written=0", "write_detected"),
+    "analysis_input_fingerprint_mismatch": ("analysis_input_fingerprint", "same canonical SHA-256", "mismatch"),
 }
 
 
@@ -97,6 +98,23 @@ def _failure_output(error: MarketSignalPreflightError, *, preflight: bool) -> di
 def _analysis_input_fingerprint(value: Mapping[str, Any]) -> str:
     canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return "market_signal_analysis_input_" + sha256(canonical.encode()).hexdigest()
+
+
+def _analysis_input_component_fingerprints(value: Mapping[str, Any]) -> dict[str, str]:
+    """Safe change diagnostics: hashes only, never analysis input values."""
+    fields = ("schema_version", "query", "observed_at", "serp_results", "own_site_overlap",
+              "search_console_signal", "affiliate_signal", "intent_taxonomy", "analysis_instructions")
+    return {field: sha256(json.dumps(value.get(field), ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest() for field in fields}
+
+
+def _verify_preflight_live_identity(preflight_input: Mapping[str, Any], outgoing_input: Mapping[str, Any]) -> str:
+    """Fail closed before transport when the canonical input would change."""
+    preflight_fingerprint = _analysis_input_fingerprint(preflight_input)
+    outgoing_fingerprint = _analysis_input_fingerprint(outgoing_input)
+    if preflight_fingerprint != outgoing_fingerprint:
+        raise MarketSignalPreflightError("preflight_to_live_identity", MarketAnalysisError("analysis_input_fingerprint_mismatch"))
+    return preflight_fingerprint
 
 
 def _load_live_serp(args: Any, *, cache_only: bool) -> tuple[list[Mapping[str, Any]], str]:
@@ -147,11 +165,12 @@ def _preflight_report(context: Mapping[str, Any]) -> dict[str, Any]:
             "affiliate_reliability_status": signal["affiliate_signal"]["reliability_status"],
             "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
             "analysis_input_fingerprint": _analysis_input_fingerprint(context["analysis_input"]),
+            "analysis_input_component_fingerprints": _analysis_input_component_fingerprints(context["analysis_input"]),
             "openai_request_ready": True, "openai_call": 0}
 
 def main(argv: Sequence[str]|None=None)->int:
     parser=argparse.ArgumentParser(description="Build a Market Signal report; SERP is fixture-only unless --live-serp is explicit.")
-    parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture"); parser.add_argument("--live-serp",action="store_true"); parser.add_argument("--own-site-fixture"); parser.add_argument("--planning-fixture"); parser.add_argument("--analysis-response-fixture"); parser.add_argument("--live-analysis",action="store_true"); parser.add_argument("--analysis-preflight",action="store_true"); parser.add_argument("--period-start"); parser.add_argument("--period-end"); parser.add_argument("--property-uri",default="https://cloudflare-webhook.tyansaku3325.workers.dev/"); parser.add_argument("--cache-dir",default=".market-signal-cache"); parser.add_argument("--cache-ttl-seconds",type=int,default=7*24*60*60); parser.add_argument("--format",choices=("summary","json"),default="summary")
+    parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture"); parser.add_argument("--live-serp",action="store_true"); parser.add_argument("--own-site-fixture"); parser.add_argument("--planning-fixture"); parser.add_argument("--analysis-response-fixture"); parser.add_argument("--live-analysis",action="store_true"); parser.add_argument("--analysis-preflight",action="store_true"); parser.add_argument("--preflight-to-live-identity-guard",action="store_true"); parser.add_argument("--period-start"); parser.add_argument("--period-end"); parser.add_argument("--property-uri",default="https://cloudflare-webhook.tyansaku3325.workers.dev/"); parser.add_argument("--cache-dir",default=".market-signal-cache"); parser.add_argument("--cache-ttl-seconds",type=int,default=7*24*60*60); parser.add_argument("--format",choices=("summary","json"),default="summary")
     args=parser.parse_args(argv)
     try:
         if args.analysis_preflight:
@@ -159,6 +178,8 @@ def main(argv: Sequence[str]|None=None)->int:
                 raise MarketSignalReadError("preflight_mode_invalid")
             context = _prepare_live_context(args, cache_only=True)
             print(json.dumps(_preflight_report(context), ensure_ascii=False, sort_keys=True)); return 0
+        if args.preflight_to_live_identity_guard and (not args.live_serp or not args.live_analysis or args.own_site_fixture or args.planning_fixture or args.analysis_response_fixture):
+            raise MarketSignalReadError("preflight_to_live_guard_mode_invalid")
         if args.live_serp == bool(args.serp_fixture) or (args.live_analysis and args.analysis_response_fixture): raise MarketSignalReadError("execution_mode_invalid")
         planning=load_planning_fixture(args.planning_fixture) if args.planning_fixture else None
         if args.own_site_fixture:
@@ -166,7 +187,7 @@ def main(argv: Sequence[str]|None=None)->int:
             articles, pages, affiliate=own["articles"], own["page_daily"], own["affiliate_events"]
         else:
             if args.live_analysis:
-                context = _prepare_live_context(args, cache_only=False)
+                context = _prepare_live_context(args, cache_only=args.preflight_to_live_identity_guard)
                 articles, pages, affiliate, results, mode, signal = context["articles"], context["pages"], context["affiliate"], context["results"], context["mode"], context["signal"]
             else:
                 if planning is None: raise MarketSignalReadError("planning_fixture_required")
@@ -189,6 +210,8 @@ def main(argv: Sequence[str]|None=None)->int:
             transport = FixtureMarketAnalysisTransport(json.loads(Path(args.analysis_response_fixture).read_text())) if args.analysis_response_fixture else OpenAiMarketSignalAnalysisTransport()
             analysis_adapter = MarketSignalAnalysisAdapter(transport)
             analysis_input = context["analysis_input"] if args.live_analysis else analysis_adapter.build_input(query=args.query, observed_at=args.observed_at, serp_results=results, own_site_signal=signal)
+            if args.preflight_to_live_identity_guard:
+                identity_fingerprint = _verify_preflight_live_identity(context["analysis_input"], analysis_input)
             model_analysis = analysis_adapter.analyze_input(analysis_input)
             analysis = {"common_intents": model_analysis["common_intents"], "common_angles": model_analysis["common_angles"], "uncovered_questions": [f"{item['classification']}: {item['question']}" for item in model_analysis["uncovered_questions"]]}
             opportunities = [{"topic": item["topic"], "reason": item["reason"], "market_evidence": item["market_evidence"], "own_site_gap": item["own_site_gap"], "expected_search_intent": item["common_intent"], "target_audience": item["target_audience"], "monetization_relevance": item["monetization_relevance"], "duplicate_risk": item["duplicate_risk"], "common_intent": item["common_intent"], "user_problem": item["user_problem"], "confidence": item["confidence"]} for item in model_analysis["candidate_drafts"]]
@@ -196,6 +219,8 @@ def main(argv: Sequence[str]|None=None)->int:
             if planning is not None: analysis, opportunities = planning["analysis"], planning["opportunities"]
             else: analysis, opportunities = own["analysis"], own["opportunities"]
         report=build_market_signal_report(query=args.query,observed_at=args.observed_at,source={"provider":provider,"engine":"google","locale":"ja","region":"jp","requested_result_count":10},serp_results=results,analysis=analysis,own_site_signal=signal,opportunities=opportunities)
+        if args.preflight_to_live_identity_guard:
+            report["preflight_to_live_identity_guard"] = {"status": "pass", "analysis_input_fingerprint": identity_fingerprint}
     except MarketSignalPreflightError as error:
         print(json.dumps(_failure_output(error, preflight=args.analysis_preflight), ensure_ascii=False, sort_keys=True)); return 1
     except (MarketSignalAnalysisAdapterError, OpenAiMarketSignalAnalysisError) as error:
