@@ -14,7 +14,7 @@ def results():
 def analysis(**changes):
  value={'schema_version':'market-signal-analysis-v1','query':QUERY,'common_intents':['how'],'common_angles':['導入'],'uncovered_questions':[{'question':'棚卸しの進め方','classification':'hypothesis'}],'own_site_gap_assessment':{'classification':'cluster_sibling','rationale':'既存記事と隣接する。'},'candidate_drafts':[{'topic':'Copilot エージェントの棚卸し','reason':'metadata only','market_evidence':'SERP metadata','common_intent':'how','own_site_gap':'cluster_sibling','target_audience':'管理者','user_problem':'手順不明','monetization_relevance':'not_evaluated','duplicate_risk':'low','confidence':'low','requires_human_review':True}],'confidence':'low','requires_human_review':True,'content_generation_authorized':False,'publication_authorized':False,'execution_authorized':False};value.update(changes);return value
 def response(value):
- return {'status':'completed','response_id':'must-not-output','output':[{'type':'reasoning'},{'type':'message','role':'assistant','content':[{'type':'output_text','text':json.dumps(value,ensure_ascii=False)}]}]}
+ return {'status':'completed','response_id':'must-not-output','usage':{'input_tokens':321,'output_tokens':654,'output_tokens_details':{'reasoning_tokens':500}},'output':[{'type':'reasoning'},{'type':'message','role':'assistant','content':[{'type':'output_text','text':json.dumps(value,ensure_ascii=False)}]}]}
 class RawResponseTransport:
  def __init__(self,raw):self.raw,self.calls,self.last_diagnostic=raw,0,None
  def analyze(self,*_args,**_kwargs):
@@ -42,7 +42,7 @@ class E2E(unittest.TestCase):
   return rc,json.loads(output.getvalue()),holder
  def test_complete_cache_to_report_path_uses_one_mock_call(self):
   rc,value,holder=self.run_cli(response(analysis()))
-  self.assertEqual(0,rc);self.assertEqual('market-signal-report-v1',value['schema_version']);self.assertEqual('serpapi_cache',value['source']['provider']);self.assertEqual(1,len(holder));self.assertEqual(1,holder[0].calls);self.assertEqual(1,len(value['candidate_drafts']));self.assertTrue(value['requires_human_review']);self.assertFalse(value['execution_authorized']);self.assertNotIn('must-not-output',str(value))
+  self.assertEqual(0,rc);self.assertEqual('market-signal-report-v1',value['schema_version']);self.assertEqual('serpapi_cache',value['source']['provider']);self.assertEqual(1,len(holder));self.assertEqual(1,holder[0].calls);self.assertEqual(1,len(value['candidate_drafts']));self.assertTrue(value['requires_human_review']);self.assertFalse(value['execution_authorized']);self.assertEqual({'input_tokens':321,'output_tokens':654,'output_tokens_details':{'reasoning_tokens':500}},value['market_analysis_usage']);self.assertNotIn('must-not-output',str(value))
  def test_failure_contracts_stop_at_cli_boundary(self):
   cases=[
    ({'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},'output':[]},'incomplete'),

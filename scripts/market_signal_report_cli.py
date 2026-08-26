@@ -221,6 +221,10 @@ def main(argv: Sequence[str]|None=None)->int:
         report=build_market_signal_report(query=args.query,observed_at=args.observed_at,source={"provider":provider,"engine":"google","locale":"ja","region":"jp","requested_result_count":10},serp_results=results,analysis=analysis,own_site_signal=signal,opportunities=opportunities)
         if args.preflight_to_live_identity_guard:
             report["preflight_to_live_identity_guard"] = {"status": "pass", "analysis_input_fingerprint": identity_fingerprint}
+        if args.live_analysis and isinstance(getattr(transport, "last_diagnostic", None), Mapping):
+            usage = transport.last_diagnostic.get("usage")
+            if isinstance(usage, Mapping):
+                report["market_analysis_usage"] = dict(usage)
     except MarketSignalPreflightError as error:
         print(json.dumps(_failure_output(error, preflight=args.analysis_preflight), ensure_ascii=False, sort_keys=True)); return 1
     except (MarketSignalAnalysisAdapterError, OpenAiMarketSignalAnalysisError) as error:
