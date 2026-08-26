@@ -33,12 +33,59 @@ class MarketAnalysisError(ValueError):
     """A provider response crossed the planning-only analysis boundary."""
 
 
+class MarketAnalysisValidationError(MarketAnalysisError):
+    """Value-free local policy failure safe to expose through the planning CLI."""
+
+    def __init__(self, rule: str, *, field_name: str | None = None,
+                 expected_type: str | None = None, actual_type: str | None = None,
+                 array_count: int | None = None, length: int | None = None,
+                 policy_code: str | None = None):
+        super().__init__(rule)
+        diagnostic: dict[str, Any] = {"validation_rule": rule}
+        for key, value in (("field_name", field_name), ("expected_type", expected_type),
+                           ("actual_type", actual_type), ("array_count", array_count),
+                           ("length", length), ("policy_code", policy_code)):
+            if isinstance(value, (str, int)):
+                diagnostic[key] = value
+        self.diagnostic = diagnostic
+
+
+def _value_type(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, (int, float)):
+        return "number"
+    return type(value).__name__
+
+
+def _validation_error(rule: str, **metadata: Any) -> MarketAnalysisValidationError:
+    return MarketAnalysisValidationError(rule, **metadata)
+
+
 def _text(value: object, name: str, *, maximum: int = 500) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum:
-        raise MarketAnalysisError(f"{name}_invalid")
+    if not isinstance(value, str):
+        raise _validation_error("text_type_invalid", field_name=name, expected_type="non-empty string",
+                                actual_type=_value_type(value))
     result = value.strip()
+    if not result:
+        raise _validation_error("text_required", field_name=name, expected_type="non-empty string",
+                                actual_type="empty_string", length=0)
+    if len(result) > maximum:
+        raise _validation_error("text_length_exceeded", field_name=name,
+                                expected_type=f"string <= {maximum} characters", actual_type="string",
+                                length=len(result), policy_code="field_length_limit")
     if _SECRET_LIKE.search(result) or result.startswith("# ") or "\n\n" in result:
-        raise MarketAnalysisError("secret_or_article_like_text_rejected")
+        raise _validation_error("secret_or_article_like_text_rejected", field_name=name,
+                                expected_type="concise metadata text", actual_type="string",
+                                policy_code="metadata_only_text")
     return result
 
 
@@ -110,47 +157,91 @@ def build_market_analysis_input(*, query: str, observed_at: str, serp_results: S
 def _candidate(value: Mapping[str, Any]) -> dict[str, Any]:
     required = {"topic", "reason", "market_evidence", "common_intent", "own_site_gap", "target_audience", "user_problem", "monetization_relevance", "duplicate_risk", "confidence", "requires_human_review"}
     if not isinstance(value, Mapping) or set(value) != required:
-        raise MarketAnalysisError("candidate_schema_invalid")
+        raise _validation_error("candidate_schema_invalid", field_name="candidate_drafts[]",
+                                expected_type="exact candidate object", actual_type=_value_type(value),
+                                policy_code="candidate_schema")
     candidate = {key: _text(value[key], key) for key in required - {"requires_human_review"}}
-    if candidate["common_intent"] not in INTENTS or candidate["own_site_gap"] not in _GAPS or candidate["duplicate_risk"] not in _RISKS or candidate["confidence"] not in _CONFIDENCE:
-        raise MarketAnalysisError("candidate_enum_invalid")
+    for field_name, allowed in (("common_intent", INTENTS), ("own_site_gap", _GAPS),
+                                ("duplicate_risk", _RISKS), ("confidence", _CONFIDENCE)):
+        if candidate[field_name] not in allowed:
+            raise _validation_error("candidate_enum_invalid", field_name=f"candidate_drafts[].{field_name}",
+                                    expected_type="known enum", actual_type="invalid_enum",
+                                    policy_code="candidate_enum")
     if value["requires_human_review"] is not True:
-        raise MarketAnalysisError("candidate_human_review_required")
-    if candidate["own_site_gap"] in {"already_covered", "high_duplicate_risk"} or candidate["duplicate_risk"] == "high":
-        raise MarketAnalysisError("unsafe_candidate_rejected")
+        raise _validation_error("candidate_human_review_required", field_name="candidate_drafts[].requires_human_review",
+                                expected_type="true", actual_type=_value_type(value["requires_human_review"]),
+                                policy_code="human_review_required")
+    if candidate["own_site_gap"] in {"already_covered", "high_duplicate_risk"}:
+        raise _validation_error("candidate_covered_gap_rejected", field_name="candidate_drafts[].own_site_gap",
+                                expected_type="cluster_sibling or possible_gap", actual_type="unsafe_enum",
+                                policy_code="already_covered_candidate_rejected")
+    if candidate["duplicate_risk"] == "high":
+        raise _validation_error("candidate_high_duplicate_risk_rejected", field_name="candidate_drafts[].duplicate_risk",
+                                expected_type="none, low, or medium", actual_type="unsafe_enum",
+                                policy_code="high_duplicate_risk_rejected")
     return {**candidate, "requires_human_review": True}
 
 
 def validate_market_analysis(value: Mapping[str, Any], analysis_input: Mapping[str, Any]) -> dict[str, Any]:
     required = {"schema_version", "query", "common_intents", "common_angles", "uncovered_questions", "own_site_gap_assessment", "candidate_drafts", "confidence", "requires_human_review", "content_generation_authorized", "publication_authorized", "execution_authorized"}
     if not isinstance(value, Mapping) or set(value) != required or value.get("schema_version") != ANALYSIS_SCHEMA_VERSION:
-        raise MarketAnalysisError("analysis_schema_invalid")
+        raise _validation_error("analysis_schema_invalid", field_name="market_signal_analysis",
+                                expected_type=ANALYSIS_SCHEMA_VERSION, actual_type=_value_type(value),
+                                policy_code="analysis_schema")
     if value.get("query") != analysis_input.get("query"):
-        raise MarketAnalysisError("query_identity_mismatch")
+        raise _validation_error("query_identity_mismatch", field_name="query",
+                                expected_type="same_as_analysis_input", actual_type="different_string",
+                                policy_code="query_identity")
     intents = value.get("common_intents")
     if not isinstance(intents, list) or not intents or len(set(intents)) != len(intents) or any(item not in INTENTS for item in intents):
-        raise MarketAnalysisError("intent_enum_invalid")
+        raise _validation_error("intent_enum_invalid", field_name="common_intents",
+                                expected_type="non-empty unique known intent enum array", actual_type=_value_type(intents),
+                                array_count=len(intents) if isinstance(intents, list) else None,
+                                policy_code="intent_taxonomy")
     angles = value.get("common_angles")
     if not isinstance(angles, list) or not angles or len(angles) > 10:
-        raise MarketAnalysisError("common_angles_invalid")
+        raise _validation_error("common_angles_invalid", field_name="common_angles",
+                                expected_type="non-empty array <= 10", actual_type=_value_type(angles),
+                                array_count=len(angles) if isinstance(angles, list) else None,
+                                policy_code="common_angles_limit")
     clean_angles = [_text(item, "common_angle", maximum=250) for item in angles]
     questions = value.get("uncovered_questions")
     if not isinstance(questions, list) or len(questions) > 10:
-        raise MarketAnalysisError("uncovered_questions_invalid")
+        raise _validation_error("uncovered_questions_invalid", field_name="uncovered_questions",
+                                expected_type="array <= 10", actual_type=_value_type(questions),
+                                array_count=len(questions) if isinstance(questions, list) else None,
+                                policy_code="uncovered_questions_limit")
     clean_questions = []
     for item in questions:
         if not isinstance(item, Mapping) or set(item) != {"question", "classification"} or item.get("classification") not in {"possible_gap", "hypothesis"}:
-            raise MarketAnalysisError("uncovered_question_invalid")
+            raise _validation_error("uncovered_question_invalid", field_name="uncovered_questions[]",
+                                    expected_type="question plus possible_gap or hypothesis", actual_type=_value_type(item),
+                                    policy_code="gap_hypothesis_required")
         clean_questions.append({"question": _text(item.get("question"), "uncovered_question", maximum=300), "classification": item["classification"]})
     assessment = value.get("own_site_gap_assessment")
     if not isinstance(assessment, Mapping) or set(assessment) != {"classification", "rationale"} or assessment.get("classification") not in _GAPS:
-        raise MarketAnalysisError("own_site_gap_invalid")
+        raise _validation_error("own_site_gap_invalid", field_name="own_site_gap_assessment",
+                                expected_type="classification and rationale", actual_type=_value_type(assessment),
+                                policy_code="own_site_gap_schema")
     drafts = value.get("candidate_drafts")
     if not isinstance(drafts, list) or len(drafts) > MAX_CANDIDATES:
-        raise MarketAnalysisError("candidate_count_invalid")
+        raise _validation_error("candidate_count_invalid", field_name="candidate_drafts",
+                                expected_type=f"array <= {MAX_CANDIDATES}", actual_type=_value_type(drafts),
+                                array_count=len(drafts) if isinstance(drafts, list) else None,
+                                policy_code="candidate_maximum")
     clean_drafts = [_candidate(item) for item in drafts]
-    if value.get("confidence") not in _CONFIDENCE or value.get("requires_human_review") is not True or any(value.get(key) is not False for key in ("content_generation_authorized", "publication_authorized", "execution_authorized")):
-        raise MarketAnalysisError("analysis_authorization_boundary_invalid")
+    if value.get("confidence") not in _CONFIDENCE:
+        raise _validation_error("confidence_enum_invalid", field_name="confidence", expected_type="known confidence enum",
+                                actual_type="invalid_enum", policy_code="confidence_enum")
+    if value.get("requires_human_review") is not True:
+        raise _validation_error("analysis_human_review_required", field_name="requires_human_review",
+                                expected_type="true", actual_type=_value_type(value.get("requires_human_review")),
+                                policy_code="human_review_required")
+    for key in ("content_generation_authorized", "publication_authorized", "execution_authorized"):
+        if value.get(key) is not False:
+            raise _validation_error("analysis_authorization_boundary_invalid", field_name=key,
+                                    expected_type="false", actual_type=_value_type(value.get(key)),
+                                    policy_code="authorization_must_be_false")
     return {"schema_version": ANALYSIS_SCHEMA_VERSION, "query": analysis_input["query"], "common_intents": list(intents), "common_angles": clean_angles,
             "uncovered_questions": clean_questions, "own_site_gap_assessment": {"classification": assessment["classification"], "rationale": _text(assessment.get("rationale"), "gap_rationale")},
             "candidate_drafts": clean_drafts, "confidence": value["confidence"], "requires_human_review": True,

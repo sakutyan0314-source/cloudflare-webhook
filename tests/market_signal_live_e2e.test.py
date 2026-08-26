@@ -62,6 +62,9 @@ class E2E(unittest.TestCase):
   for value in (analysis(schema_version='market-signal-analysis-v0'),missing_confidence,analysis(candidate_drafts=[analysis()['candidate_drafts'][0]]*4),analysis(publication_authorized=True),analysis(candidate_drafts=[{**analysis()['candidate_drafts'][0],'duplicate_risk':'high'}])):
    with self.subTest(value=value):
     rc,out,_=self.run_cli(response(value));self.assertEqual(1,rc);self.assertEqual('schema_or_policy_failure',out['failure_classification'])
+  rc,out,_=self.run_cli(response(analysis(candidate_drafts=[analysis()['candidate_drafts'][0]]*4)))
+  self.assertEqual('candidate_count_invalid',out['validation_rule']);self.assertEqual('candidate_drafts',out['field_name']);self.assertEqual('candidate_maximum',out['policy_code'])
+  self.assertNotIn('response_structure_diagnostic',out)
   rc,out,_=self.run_cli(response(analysis()),planning={'bad':True});self.assertEqual(1,rc);self.assertEqual('market_signal_input_invalid',out['error_class'])
 
 if __name__=='__main__':unittest.main()

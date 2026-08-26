@@ -213,7 +213,13 @@ def main(argv: Sequence[str]|None=None)->int:
     except (MarketSignalAnalysisAdapterError, OpenAiMarketSignalAnalysisError) as error:
         output={"schema_version":"market-signal-report-v1","status":"fail","error_class":"market_signal_analysis_failed"}
         if isinstance(error.code,str): output["failure_classification"]=error.code
-        if isinstance(error.diagnostic,Mapping): output["response_structure_diagnostic"]=error.diagnostic
+        if isinstance(error.diagnostic,Mapping):
+            if error.code == "schema_or_policy_failure":
+                for key in ("validation_rule", "field_name", "expected_type", "actual_type", "array_count", "length", "policy_code"):
+                    if isinstance(error.diagnostic.get(key), (str, int)):
+                        output[key] = error.diagnostic[key]
+            else:
+                output["response_structure_diagnostic"]=error.diagnostic
         print(json.dumps(output,ensure_ascii=False,sort_keys=True)); return 1
     except (OSError,KeyError,ValueError,MarketSignalReadError) as error:
         print(json.dumps(_failure_output(MarketSignalPreflightError("cli_input", error), preflight=args.analysis_preflight), ensure_ascii=False, sort_keys=True)); return 1

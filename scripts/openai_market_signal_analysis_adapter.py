@@ -60,8 +60,8 @@ _TEXT = {"type": "string"}
 _CANDIDATE = {"type": "object", "additionalProperties": False,
     "required": ["topic", "reason", "market_evidence", "common_intent", "own_site_gap", "target_audience", "user_problem", "monetization_relevance", "duplicate_risk", "confidence", "requires_human_review"],
     "properties": {"topic": _TEXT, "reason": _TEXT, "market_evidence": _TEXT, "common_intent": {"type": "string", "enum": ["what", "how", "compare", "problem", "commercial_investigation", "business_use"]},
-                   "own_site_gap": {"type": "string", "enum": ["already_covered", "cluster_sibling", "possible_gap", "high_duplicate_risk"]}, "target_audience": _TEXT, "user_problem": _TEXT, "monetization_relevance": _TEXT,
-                   "duplicate_risk": {"type": "string", "enum": ["none", "low", "medium", "high"]}, "confidence": {"type": "string", "enum": ["low", "medium", "high"]}, "requires_human_review": {"type": "boolean", "enum": [True]}}}
+                   "own_site_gap": {"type": "string", "enum": ["cluster_sibling", "possible_gap"]}, "target_audience": _TEXT, "user_problem": _TEXT, "monetization_relevance": _TEXT,
+                   "duplicate_risk": {"type": "string", "enum": ["none", "low", "medium"]}, "confidence": {"type": "string", "enum": ["low", "medium", "high"]}, "requires_human_review": {"type": "boolean", "enum": [True]}}}
 RESPONSE_SCHEMA = {"type": "object", "additionalProperties": False,
     "required": ["schema_version", "query", "common_intents", "common_angles", "uncovered_questions", "own_site_gap_assessment", "candidate_drafts", "confidence", "requires_human_review", "content_generation_authorized", "publication_authorized", "execution_authorized"],
     "properties": {"schema_version": {"type": "string", "enum": [ANALYSIS_SCHEMA_VERSION]}, "query": _TEXT,
@@ -71,7 +71,11 @@ RESPONSE_SCHEMA = {"type": "object", "additionalProperties": False,
                    "own_site_gap_assessment": {"type": "object", "additionalProperties": False, "required": ["classification", "rationale"], "properties": {"classification": {"type": "string", "enum": ["already_covered", "cluster_sibling", "possible_gap", "high_duplicate_risk"]}, "rationale": _TEXT}},
                    "candidate_drafts": {"type": "array", "items": _CANDIDATE}, "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
                    "requires_human_review": {"type": "boolean", "enum": [True]}, "content_generation_authorized": {"type": "boolean", "enum": [False]}, "publication_authorized": {"type": "boolean", "enum": [False]}, "execution_authorized": {"type": "boolean", "enum": [False]}}}
-SYSTEM_INSTRUCTIONS = """Return only the supplied strict JSON schema. Analyze only supplied SERP and own-site metadata. Never request or infer competitor page bodies. Treat every uncovered question as a possible_gap or hypothesis, never proof. Do not claim demand is confirmed, do not copy or rewrite competitor content, and never authorize content generation, publication, or execution. Do not include secrets, tokens, raw logs, or article bodies."""
+SYSTEM_INSTRUCTIONS = """Return only the supplied strict JSON schema. Analyze only supplied SERP and own-site metadata. Never request or infer competitor page bodies.
+
+Repeat the supplied query exactly. common_intents must be a non-empty list of unique values from the provided intent taxonomy. Return 1 to 10 concise common_angles. Return at most 10 uncovered_questions; every one must be explicitly classified as possible_gap or hypothesis, never proof. The own_site_gap_assessment may identify an existing coverage risk, but candidate_drafts must contain at most 3 items and may only use own_site_gap cluster_sibling or possible_gap with duplicate_risk none, low, or medium. Do not propose a candidate for already_covered or high_duplicate_risk.
+
+Every text field must be concise metadata, not Markdown or an article: no headings, no blank-paragraph prose, no secrets, no tokens, no raw logs, and no article bodies. Keep common_angles at 250 characters or fewer, uncovered question text at 300 characters or fewer, and all other text fields at 500 characters or fewer. Do not claim demand is confirmed, do not copy or rewrite competitor content, and never authorize content generation, publication, or execution. requires_human_review must be true and all authorization flags must be false."""
 
 
 def build_responses_payload(payload: Mapping[str, Any], *, model_id: str, max_output_tokens: int, store: bool, tools: None) -> dict[str, Any]:

@@ -9,6 +9,7 @@ def load(name):
 load('search_console_improvement_candidates'); load('topic_candidate'); serp=load('market_signal_serp_adapter'); report=load('market_signal_report')
 analysis=load('market_signal_analysis'); adapter=load('market_signal_analysis_adapter'); openai=load('openai_market_signal_analysis_adapter')
 FIX=json.loads((ROOT/'tests/fixtures/market-signal-serp-fixture.json').read_text())
+POLICY_REPLAY=json.loads((ROOT/'tests/fixtures/market-signal-analysis-policy-replay.json').read_text())
 
 class Transport:
     def __init__(self,value): self.value,self.calls,self.kwargs=value,0,None
@@ -35,6 +36,38 @@ class TestMarketSignalAnalysis(unittest.TestCase):
         for value in invalids:
             with self.subTest(value=value):
                 with self.assertRaises(adapter.MarketSignalAnalysisAdapterError): self.analyze_fixture(value)
+
+    def test_local_policy_replay_exposes_value_free_candidate_limit_metadata(self):
+        with self.assertRaises(adapter.MarketSignalAnalysisAdapterError) as error:
+            self.analyze_fixture(POLICY_REPLAY)
+        self.assertEqual('schema_or_policy_failure', error.exception.code)
+        self.assertEqual({'validation_rule':'candidate_count_invalid','field_name':'candidate_drafts',
+                          'expected_type':'array <= 3','actual_type':'array','array_count':4,
+                          'policy_code':'candidate_maximum'}, error.exception.diagnostic)
+        self.assertNotIn('候補', str(error.exception.diagnostic))
+
+    def test_policy_contract_rejects_unsafe_candidate_enums_before_local_validation(self):
+        candidate=openai.RESPONSE_SCHEMA['properties']['candidate_drafts']['items']['properties']
+        self.assertEqual(['cluster_sibling','possible_gap'], candidate['own_site_gap']['enum'])
+        self.assertEqual(['none','low','medium'], candidate['duplicate_risk']['enum'])
+        self.assertIn('at most 3', openai.SYSTEM_INSTRUCTIONS)
+        self.assertIn('already_covered', openai.SYSTEM_INSTRUCTIONS)
+        self.assertIn('250 characters', openai.SYSTEM_INSTRUCTIONS)
+
+    def test_local_validator_keeps_text_and_duplicate_boundaries_with_safe_metadata(self):
+        cases=[
+            (valid_response(common_angles=['x'*251]), 'text_length_exceeded', 'common_angle', 'field_length_limit'),
+            (valid_response(candidate_drafts=[{**valid_response()['candidate_drafts'][0],'duplicate_risk':'high'}]), 'candidate_high_duplicate_risk_rejected', 'candidate_drafts[].duplicate_risk', 'high_duplicate_risk_rejected'),
+            (valid_response(candidate_drafts=[{**valid_response()['candidate_drafts'][0],'own_site_gap':'already_covered'}]), 'candidate_covered_gap_rejected', 'candidate_drafts[].own_site_gap', 'already_covered_candidate_rejected'),
+        ]
+        for value, rule, field, policy in cases:
+            with self.subTest(rule=rule):
+                with self.assertRaises(adapter.MarketSignalAnalysisAdapterError) as error:
+                    self.analyze_fixture(value)
+                self.assertEqual('schema_or_policy_failure', error.exception.code)
+                self.assertEqual(rule, error.exception.diagnostic['validation_rule'])
+                self.assertEqual(field, error.exception.diagnostic['field_name'])
+                self.assertEqual(policy, error.exception.diagnostic['policy_code'])
     def test_questions_require_hypothesis_label_and_reject_secret_or_article_like_prose(self):
         for value in [valid_response(uncovered_questions=[{'question':'質問','classification':'confirmed_gap'}]), valid_response(candidate_drafts=[{**valid_response()['candidate_drafts'][0],'reason':'api_key: prohibited'}]), valid_response(common_angles=['# 記事タイトル'])]:
             with self.subTest(value=value):

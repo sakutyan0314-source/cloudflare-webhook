@@ -47,7 +47,8 @@ class MarketSignalAnalysisAdapter:
         except MarketAnalysisError as error:
             self.last_rejection_code = "schema_or_policy_failure"
             raise MarketSignalAnalysisAdapterError(
-                "market analysis was rejected", code=self.last_rejection_code
+                "market analysis was rejected", code=self.last_rejection_code,
+                diagnostic=getattr(error, "diagnostic", None)
             ) from error
         except MarketSignalAnalysisAdapterError:
             self.last_rejection_code = self.last_rejection_code or "provider_or_input_failure"
@@ -64,5 +65,6 @@ class MarketSignalAnalysisAdapter:
                                        own_site_signal=own_site_signal)
         except MarketAnalysisError as error:
             self.last_rejection_code = "schema_or_policy_failure"
-            raise MarketSignalAnalysisAdapterError("market analysis was rejected", code=self.last_rejection_code) from error
+            raise MarketSignalAnalysisAdapterError("market analysis was rejected", code=self.last_rejection_code,
+                                                   diagnostic=getattr(error, "diagnostic", None)) from error
         return self.analyze_input(payload)
