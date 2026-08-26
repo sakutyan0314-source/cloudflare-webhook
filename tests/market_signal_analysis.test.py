@@ -28,7 +28,7 @@ class TestMarketSignalAnalysis(unittest.TestCase):
     def test_valid_analysis_is_single_call_limited_and_metadata_only(self):
         output,transport,subject=self.analyze_fixture()
         self.assertEqual('market-signal-analysis-v1',output['schema_version']); self.assertEqual(1,transport.calls)
-        self.assertEqual({'model_id':'gpt-5.6-terra','max_input_tokens':1800,'max_output_tokens':600,'timeout_seconds':20,'store':False,'tools':None},transport.kwargs)
+        self.assertEqual({'model_id':'gpt-5.6-terra','max_input_tokens':1800,'max_output_tokens':2400,'timeout_seconds':20,'store':False,'tools':None},transport.kwargs)
         self.assertFalse(subject.limits['automatic_retry']); self.assertFalse(subject.limits['automatic_fallback']); self.assertNotIn('url',str(transport.payload)); self.assertNotIn('body_markdown',str(transport.payload))
     def test_strict_enums_candidate_bound_and_human_authorization_boundary(self):
         invalids=[valid_response(common_intents=['invented']), valid_response(candidate_drafts=[valid_response()['candidate_drafts'][0]]*4), valid_response(requires_human_review=False), valid_response(publication_authorized=True), valid_response(candidate_drafts=[{**valid_response()['candidate_drafts'][0],'duplicate_risk':'high'}]), valid_response(candidate_drafts=[{**valid_response()['candidate_drafts'][0],'own_site_gap':'already_covered'}])]
@@ -45,13 +45,13 @@ class TestMarketSignalAnalysis(unittest.TestCase):
             with self.assertRaises(adapter.MarketSignalAnalysisAdapterError): subject.analyze(query='Microsoft 365 Copilot エージェント',observed_at='2026-08-25T00:00:00Z',serp_results=serp.normalize_serp_response(FIX),own_site_signal=self.own())
             self.assertEqual(1,transport.calls)
     def test_openai_payload_is_strict_store_false_and_has_no_tools(self):
-        payload=openai.build_responses_payload({'safe':True},model_id='gpt-5.6-terra',max_output_tokens=600,store=False,tools=None)
+        payload=openai.build_responses_payload({'safe':True},model_id='gpt-5.6-terra',max_output_tokens=2400,store=False,tools=None)
         self.assertFalse(payload['store']); self.assertNotIn('tools',payload); self.assertTrue(payload['text']['format']['strict'])
         self.assertIn('possible_gap',json.dumps(payload)); self.assertIn('hypothesis',json.dumps(payload))
         serialized=json.dumps(payload['text']['format']['schema'])
         for unsupported in ('minLength','maxLength','minItems','maxItems','const'): self.assertNotIn(unsupported,serialized)
         self.assertEqual({'effort':'low'},payload['reasoning'])
-        with self.assertRaises(openai.OpenAiMarketSignalAnalysisError): openai.build_responses_payload({},model_id='wrong',max_output_tokens=600,store=False,tools=None)
+        with self.assertRaises(openai.OpenAiMarketSignalAnalysisError): openai.build_responses_payload({},model_id='wrong',max_output_tokens=2400,store=False,tools=None)
     def test_safe_http_diagnostic_truncates_and_redacts_without_retaining_raw_response(self):
         message='token: should-not-appear ' + ('x'*400)
         error=HTTPError('https://api.openai.com/v1/responses',400,'bad',None,io.BytesIO(json.dumps({'error':{'type':'invalid_request_error','code':'invalid_json_schema','message':message}}).encode()))
@@ -59,9 +59,10 @@ class TestMarketSignalAnalysis(unittest.TestCase):
         self.assertEqual(400,diagnostic['http_status']); self.assertEqual('invalid_request_error',diagnostic['error_type']); self.assertEqual('invalid_json_schema',diagnostic['error_code'])
         self.assertNotIn('should-not-appear',diagnostic['error_message']); self.assertLessEqual(len(diagnostic['error_message']),240); self.assertNotIn('raw',diagnostic)
     def test_response_extraction_handles_reasoning_then_message_and_classifies_safe_failures(self):
-        success={'status':'completed','response_id':'must-not-appear','output':[{'type':'reasoning'},{'type':'message','role':'assistant','content':[{'type':'output_text','text':'{"ok":true}'}]}]}
+        success={'status':'completed','response_id':'must-not-appear','usage':{'input_tokens':321,'output_tokens':654,'output_tokens_details':{'reasoning_tokens':500}},'output':[{'type':'reasoning'},{'type':'message','role':'assistant','content':[{'type':'output_text','text':'{"ok":true}'}]}]}
         self.assertEqual('{"ok":true}',openai._output_text(success)); diagnostic=openai.response_structure_diagnostic(success)
-        self.assertEqual(['reasoning','message'],diagnostic['output_item_types']); self.assertNotIn('response_id',diagnostic); self.assertNotIn('ok',str(diagnostic))
+        self.assertEqual(['reasoning','message'],diagnostic['output_item_types']); self.assertNotIn('response_id',diagnostic); self.assertNotIn('{"ok":true}',str(diagnostic))
+        self.assertEqual({'input_tokens':321,'output_tokens':654,'output_tokens_details':{'reasoning_tokens':500}},diagnostic['usage'])
         cases=[({'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},'output':[]},'incomplete'),({'status':'failed','output':[]},'non_completed_status'),({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'refusal','refusal':'must-not-appear'}]}]},'refusal'),({'status':'completed','output':[{'type':'message','role':'assistant','content':[]}]},'missing_output_text'),({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'{}'},{'type':'output_text','text':'{}'}]}]},'ambiguous_output_text'),({'status':'completed','output':[{'type':'tool_call'}]},'unknown_output_type'),({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_image'}]}]},'unknown_content_type')]
         for value,code in cases:
             with self.subTest(code=code):
@@ -71,5 +72,16 @@ class TestMarketSignalAnalysis(unittest.TestCase):
         diagnostic=openai.response_structure_diagnostic({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'not-json'}]}]})
         with self.assertRaises(json.JSONDecodeError): json.loads(openai._output_text({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'not-json'}]}]}))
         self.assertEqual(1,diagnostic['output_text_count'])
+
+    def test_incomplete_usage_diagnostic_is_numeric_and_content_free(self):
+        response={'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},
+                  'usage':{'input_tokens':1800,'output_tokens':2400,
+                           'output_tokens_details':{'reasoning_tokens':1900},'ignored':'not-exposed'},
+                  'output':[],'response_id':'must-not-appear'}
+        diagnostic=openai.response_structure_diagnostic(response)
+        self.assertEqual('max_output_tokens',diagnostic['incomplete_reason'])
+        self.assertEqual({'input_tokens':1800,'output_tokens':2400,
+                          'output_tokens_details':{'reasoning_tokens':1900}},diagnostic['usage'])
+        self.assertNotIn('response_id',str(diagnostic)); self.assertNotIn('ignored',str(diagnostic))
 
 if __name__=='__main__': unittest.main()

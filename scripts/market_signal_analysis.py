@@ -18,7 +18,9 @@ INPUT_SCHEMA_VERSION = "market-signal-analysis-input-v1"
 ANALYSIS_SCHEMA_VERSION = "market-signal-analysis-v1"
 MODEL_ID = "gpt-5.6-terra"
 MAX_INPUT_TOKENS = 1800
-MAX_OUTPUT_TOKENS = 600
+# Responses API counts low-effort reasoning together with visible structured
+# output. Local validation, rather than this provider budget, keeps JSON brief.
+MAX_OUTPUT_TOKENS = 2400
 TIMEOUT_SECONDS = 20
 MAX_CANDIDATES = 3
 _GAPS = frozenset({"already_covered", "cluster_sibling", "possible_gap", "high_duplicate_risk"})

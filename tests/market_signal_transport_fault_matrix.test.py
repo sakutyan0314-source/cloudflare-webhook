@@ -38,7 +38,7 @@ class TransportFaultMatrix(unittest.TestCase):
         transport = openai.OpenAiMarketSignalAnalysisTransport(api_key="test-key")
         with patch.object(openai, "urlopen", opener):
             return transport.analyze({}, model_id="gpt-5.6-terra", max_input_tokens=1800,
-                                     max_output_tokens=600, timeout_seconds=20, store=False, tools=None)
+                                     max_output_tokens=2400, timeout_seconds=20, store=False, tools=None)
 
     def test_completed_response_is_one_request(self):
         calls = []
@@ -97,7 +97,7 @@ class TransportFaultMatrix(unittest.TestCase):
         self.assertEqual("not_attempted", credential.exception.diagnostic["delivery_state"])
         transport = openai.OpenAiMarketSignalAnalysisTransport(api_key="test-key")
         with self.assertRaises(openai.OpenAiMarketSignalAnalysisError) as configuration:
-            transport.analyze({}, model_id="wrong", max_input_tokens=1800, max_output_tokens=600,
+            transport.analyze({}, model_id="wrong", max_input_tokens=1800, max_output_tokens=2400,
                               timeout_seconds=20, store=False, tools=None)
         self.assertEqual("provider_configuration_error", configuration.exception.code)
         self.assertEqual("not_attempted", configuration.exception.diagnostic["delivery_state"])

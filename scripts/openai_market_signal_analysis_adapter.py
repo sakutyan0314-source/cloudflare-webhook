@@ -110,10 +110,19 @@ def response_structure_diagnostic(response: Mapping[str, Any]) -> dict[str, Any]
                 refusal_present = refusal_present or part_type == "refusal"
     incomplete = response.get("incomplete_details")
     reason = incomplete.get("reason") if isinstance(incomplete, Mapping) and isinstance(incomplete.get("reason"), str) else None
+    usage = response.get("usage")
+    safe_usage: dict[str, Any] = {}
+    if isinstance(usage, Mapping):
+        for key in ("input_tokens", "output_tokens"):
+            if isinstance(usage.get(key), int):
+                safe_usage[key] = usage[key]
+        details = usage.get("output_tokens_details")
+        if isinstance(details, Mapping) and isinstance(details.get("reasoning_tokens"), int):
+            safe_usage["output_tokens_details"] = {"reasoning_tokens": details["reasoning_tokens"]}
     return {"delivery_state": "known", "response_status": response.get("status") if isinstance(response.get("status"), str) else None,
             "incomplete_reason": reason, "output_item_count": len(output) if isinstance(output, list) else None,
             "output_item_types": output_types, "message_count": message_count, "content_item_types": content_types,
-            "output_text_count": output_text_count, "refusal_present": refusal_present}
+            "output_text_count": output_text_count, "refusal_present": refusal_present, "usage": safe_usage}
 
 
 def _output_text(response: Mapping[str, Any]) -> str:
