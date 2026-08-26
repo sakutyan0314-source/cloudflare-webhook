@@ -60,7 +60,11 @@ def build_candidate_drafts(opportunities: Sequence[Mapping[str, Any]]) -> list[d
 def build_market_signal_report(*, query: str, observed_at: str, source: Mapping[str, Any], serp_results: Sequence[Mapping[str, Any]], analysis: Mapping[str, Any], own_site_signal: Mapping[str, Any], opportunities: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     query, observed_at = _safe_text(query, "query"), _timestamp(observed_at)
     if set(source) != {"provider", "engine", "locale", "region", "requested_result_count"} or not all(isinstance(source.get(key), str) and source[key] for key in ("provider", "engine", "locale", "region")) or source.get("requested_result_count") != 10: raise MarketSignalError("source_invalid")
-    if set(analysis) != {"common_intents", "common_angles", "uncovered_questions"} or not all(isinstance(analysis.get(key), list) and all(isinstance(item, str) and item for item in analysis[key]) for key in analysis): raise MarketSignalError("analysis_invalid")
+    required_analysis = {"common_intents", "common_angles", "uncovered_questions"}
+    optional_analysis = {"own_site_gap_assessment", "confidence"}
+    if not isinstance(analysis, Mapping) or not required_analysis.issubset(analysis) or not set(analysis).issubset(required_analysis | optional_analysis) or not all(isinstance(analysis.get(key), list) and all(isinstance(item, str) and item for item in analysis[key]) for key in required_analysis): raise MarketSignalError("analysis_invalid")
+    if "own_site_gap_assessment" in analysis and not isinstance(analysis["own_site_gap_assessment"], Mapping): raise MarketSignalError("analysis_invalid")
+    if "confidence" in analysis and not isinstance(analysis["confidence"], str): raise MarketSignalError("analysis_invalid")
     results = [dict(item) for item in serp_results]
     if len(results) > 10 or not all(set(item) == {"schema_version", "position", "title", "url", "domain", "snippet", "published_at"} for item in results): raise MarketSignalError("serp_results_invalid")
     candidate_drafts = build_candidate_drafts(opportunities)

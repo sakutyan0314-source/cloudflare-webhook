@@ -15,6 +15,7 @@ def load(name):
 load("search_console_improvement_candidates"); load("topic_candidate"); load("market_signal_serp_adapter")
 load("market_signal_report"); load("market_signal_analysis"); load("market_signal_analysis_adapter")
 openai = load("openai_market_signal_analysis_adapter")
+load("market_signal_local_report")
 load("search_console_collector"); load("search_console_d1_reader"); load("ai_recommendation_d1_reader")
 load("search_console_affiliate_reader"); load("search_console_improvement_candidate_review")
 load("phase2a_candidate_read_cli"); cli = load("market_signal_report_cli")

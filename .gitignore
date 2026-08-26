@@ -30,3 +30,4 @@ topic-candidate-ledger/
 
 # Local-only normalized SERP metadata cache. Never commit provider output.
 .market-signal-cache/
+.market-signal-reports/

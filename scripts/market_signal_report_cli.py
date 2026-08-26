@@ -15,6 +15,9 @@ from market_signal_analysis_adapter import MarketSignalAnalysisAdapter, MarketSi
 from market_signal_analysis import ANALYSIS_SCHEMA_VERSION, MAX_OUTPUT_TOKENS, MODEL_ID, MarketAnalysisError
 from market_signal_serp_adapter import SerpApiSafetyError
 from openai_market_signal_analysis_adapter import OpenAiMarketSignalAnalysisError, OpenAiMarketSignalAnalysisTransport, build_responses_payload
+from market_signal_local_report import (build_local_market_analysis_report,
+                                        render_saved_market_analysis_summary,
+                                        save_local_market_analysis_report)
 
 class MarketSignalReadError(RuntimeError): pass
 class FixtureMarketAnalysisTransport:
@@ -153,7 +156,7 @@ def _preflight_report(context: Mapping[str, Any]) -> dict[str, Any]:
 
 def main(argv: Sequence[str]|None=None)->int:
     parser=argparse.ArgumentParser(description="Build a Market Signal report; SERP is fixture-only unless --live-serp is explicit.")
-    parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture"); parser.add_argument("--live-serp",action="store_true"); parser.add_argument("--own-site-fixture"); parser.add_argument("--planning-fixture"); parser.add_argument("--analysis-response-fixture"); parser.add_argument("--live-analysis",action="store_true"); parser.add_argument("--analysis-preflight",action="store_true"); parser.add_argument("--preflight-to-live-identity-guard",action="store_true"); parser.add_argument("--period-start"); parser.add_argument("--period-end"); parser.add_argument("--property-uri",default="https://cloudflare-webhook.tyansaku3325.workers.dev/"); parser.add_argument("--cache-dir",default=".market-signal-cache"); parser.add_argument("--cache-ttl-seconds",type=int,default=7*24*60*60); parser.add_argument("--format",choices=("summary","json"),default="summary")
+    parser.add_argument("--query",required=True); parser.add_argument("--observed-at",required=True); parser.add_argument("--serp-fixture"); parser.add_argument("--live-serp",action="store_true"); parser.add_argument("--own-site-fixture"); parser.add_argument("--planning-fixture"); parser.add_argument("--analysis-response-fixture"); parser.add_argument("--live-analysis",action="store_true"); parser.add_argument("--analysis-preflight",action="store_true"); parser.add_argument("--preflight-to-live-identity-guard",action="store_true"); parser.add_argument("--period-start"); parser.add_argument("--period-end"); parser.add_argument("--property-uri",default="https://cloudflare-webhook.tyansaku3325.workers.dev/"); parser.add_argument("--cache-dir",default=".market-signal-cache"); parser.add_argument("--cache-ttl-seconds",type=int,default=7*24*60*60); parser.add_argument("--local-report-dir",default=".market-signal-reports"); parser.add_argument("--format",choices=("summary","json"),default="summary")
     args=parser.parse_args(argv)
     try:
         if args.analysis_preflight:
@@ -196,7 +199,7 @@ def main(argv: Sequence[str]|None=None)->int:
             if args.preflight_to_live_identity_guard:
                 identity_fingerprint = _verify_preflight_live_identity(context["analysis_input"], analysis_input)
             model_analysis = analysis_adapter.analyze_input(analysis_input)
-            analysis = {"common_intents": model_analysis["common_intents"], "common_angles": model_analysis["common_angles"], "uncovered_questions": [f"{item['classification']}: {item['question']}" for item in model_analysis["uncovered_questions"]]}
+            analysis = {"common_intents": model_analysis["common_intents"], "common_angles": model_analysis["common_angles"], "uncovered_questions": [f"{item['classification']}: {item['question']}" for item in model_analysis["uncovered_questions"]], "own_site_gap_assessment": model_analysis["own_site_gap_assessment"], "confidence": model_analysis["confidence"]}
             opportunities = [{"topic": item["topic"], "reason": item["reason"], "market_evidence": item["market_evidence"], "own_site_gap": item["own_site_gap"], "expected_search_intent": item["common_intent"], "target_audience": item["target_audience"], "monetization_relevance": item["monetization_relevance"], "duplicate_risk": item["duplicate_risk"], "common_intent": item["common_intent"], "user_problem": item["user_problem"], "confidence": item["confidence"]} for item in model_analysis["candidate_drafts"]]
         else:
             if planning is not None: analysis, opportunities = planning["analysis"], planning["opportunities"]
@@ -208,6 +211,14 @@ def main(argv: Sequence[str]|None=None)->int:
             usage = transport.last_diagnostic.get("usage")
             if isinstance(usage, Mapping):
                 report["market_analysis_usage"] = dict(usage)
+        if args.live_analysis:
+            serpapi_request_count = 1 if context["mode"] == "live_request" else 0
+            local_report = build_local_market_analysis_report(report=report, model=MODEL_ID,
+                                                              serpapi_request_count=serpapi_request_count,
+                                                              openai_call_count=1,
+                                                              usage=report.get("market_analysis_usage"))
+            saved_report_path = save_local_market_analysis_report(local_report, Path(args.local_report_dir))
+            report["local_report_path"] = str(saved_report_path)
     except MarketSignalPreflightError as error:
         print(json.dumps(_failure_output(error, preflight=args.analysis_preflight), ensure_ascii=False, sort_keys=True)); return 1
     except (MarketSignalAnalysisAdapterError, OpenAiMarketSignalAnalysisError) as error:
@@ -223,5 +234,9 @@ def main(argv: Sequence[str]|None=None)->int:
         print(json.dumps(output,ensure_ascii=False,sort_keys=True)); return 1
     except (OSError,KeyError,ValueError,MarketSignalReadError) as error:
         print(json.dumps(_failure_output(MarketSignalPreflightError("cli_input", error), preflight=args.analysis_preflight), ensure_ascii=False, sort_keys=True)); return 1
-    print(json.dumps(report,ensure_ascii=False,sort_keys=True) if args.format=="json" else render_human_report(report)); return 0
+    if args.live_analysis and args.format == "summary":
+        print(render_saved_market_analysis_summary(local_report, saved_report_path))
+    else:
+        print(json.dumps(report,ensure_ascii=False,sort_keys=True) if args.format=="json" else render_human_report(report))
+    return 0
 if __name__=="__main__": raise SystemExit(main())

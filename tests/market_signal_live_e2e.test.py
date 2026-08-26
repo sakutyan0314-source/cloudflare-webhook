@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 ROOT=pathlib.Path(__file__).parents[1]
 def load(name):
  spec=importlib.util.spec_from_file_location(name,ROOT/'scripts'/f'{name}.py');mod=importlib.util.module_from_spec(spec);assert spec and spec.loader;sys.modules[name]=mod;spec.loader.exec_module(mod);return mod
-load('search_console_improvement_candidates');load('topic_candidate');serp=load('market_signal_serp_adapter');load('market_signal_report');load('market_signal_analysis');load('market_signal_analysis_adapter');openai=load('openai_market_signal_analysis_adapter');load('search_console_collector');load('search_console_d1_reader');load('ai_recommendation_d1_reader');load('search_console_affiliate_reader');load('search_console_improvement_candidate_review');load('phase2a_candidate_read_cli');cli=load('market_signal_report_cli')
+load('search_console_improvement_candidates');load('topic_candidate');serp=load('market_signal_serp_adapter');load('market_signal_report');load('market_signal_analysis');load('market_signal_analysis_adapter');openai=load('openai_market_signal_analysis_adapter');load('market_signal_local_report');load('search_console_collector');load('search_console_d1_reader');load('ai_recommendation_d1_reader');load('search_console_affiliate_reader');load('search_console_improvement_candidate_review');load('phase2a_candidate_read_cli');cli=load('market_signal_report_cli')
 
 QUERY='Microsoft 365 Copilot エージェント'; OBSERVED='2026-08-25T00:00:00Z'
 def results():
@@ -32,7 +32,7 @@ class E2E(unittest.TestCase):
   cli.OpenAiMarketSignalAnalysisTransport=factory
   with tempfile.TemporaryDirectory() as directory:
    cache=serp.LocalNormalizedSerpCache(pathlib.Path(directory),ttl_seconds=604800);cache.put(serp.serp_cache_key(query=QUERY,locale='ja',region='jp',result_count=10),results(),now=datetime(2026,8,25,tzinfo=timezone.utc))
-   args=['--query',QUERY,'--observed-at',OBSERVED,'--live-serp','--live-analysis','--own-site-fixture','tests/fixtures/market-signal-own-site-fixture.json','--cache-dir',directory,'--cache-ttl-seconds','604800','--format','json']
+   args=['--query',QUERY,'--observed-at',OBSERVED,'--live-serp','--live-analysis','--own-site-fixture','tests/fixtures/market-signal-own-site-fixture.json','--cache-dir',directory,'--cache-ttl-seconds','604800','--local-report-dir',str(pathlib.Path(directory)/'reports'),'--format','json']
    if planning is not None:
     path=pathlib.Path(directory)/'planning.json';path.write_text(json.dumps(planning));args+=['--planning-fixture',str(path)]
    output=io.StringIO()
@@ -42,7 +42,7 @@ class E2E(unittest.TestCase):
   return rc,json.loads(output.getvalue()),holder
  def test_complete_cache_to_report_path_uses_one_mock_call(self):
   rc,value,holder=self.run_cli(response(analysis()))
-  self.assertEqual(0,rc);self.assertEqual('market-signal-report-v1',value['schema_version']);self.assertEqual('serpapi_cache',value['source']['provider']);self.assertEqual(1,len(holder));self.assertEqual(1,holder[0].calls);self.assertEqual(1,len(value['candidate_drafts']));self.assertTrue(value['requires_human_review']);self.assertFalse(value['execution_authorized']);self.assertEqual({'input_tokens':321,'output_tokens':654,'output_tokens_details':{'reasoning_tokens':500}},value['market_analysis_usage']);self.assertNotIn('must-not-output',str(value))
+  self.assertEqual(0,rc);self.assertEqual('market-signal-report-v1',value['schema_version']);self.assertEqual('serpapi_cache',value['source']['provider']);self.assertEqual(1,len(holder));self.assertEqual(1,holder[0].calls);self.assertEqual(1,len(value['candidate_drafts']));self.assertTrue(value['requires_human_review']);self.assertFalse(value['execution_authorized']);self.assertEqual({'input_tokens':321,'output_tokens':654,'output_tokens_details':{'reasoning_tokens':500}},value['market_analysis_usage']);self.assertIn('local_report_path',value);self.assertNotIn('must-not-output',str(value))
  def test_failure_contracts_stop_at_cli_boundary(self):
   cases=[
    ({'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},'output':[]},'incomplete'),
