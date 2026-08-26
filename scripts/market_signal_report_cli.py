@@ -1,14 +1,14 @@
 """Market Signal CLI; SerpApi is called only with an explicit live flag."""
 from __future__ import annotations
-import argparse, json, re, subprocess
+import argparse, json, re
 from datetime import date, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from ai_recommendation_d1_reader import AiRecommendationD1Reader
 from search_console_affiliate_reader import SearchConsoleAffiliateReader
-from search_console_d1_reader import D1ReadSafetyError, _validate_fixed_select
-from phase2a_candidate_read_cli import DATABASE_NAME, _parse_wrangler_json, _render_fixed_select
+from search_console_d1_reader import D1ReadSafetyError
+from phase2a_candidate_read_cli import Phase2ACandidateReadError, WranglerFixedSelectTransport
 from market_signal_serp_adapter import LocalNormalizedSerpCache, SerpApiGoogleSearchAdapter, normalize_serp_response
 from market_signal_report import build_market_signal_report, build_own_site_signal, render_human_report
 from market_signal_analysis_adapter import MarketSignalAnalysisAdapter, MarketSignalAnalysisAdapterError
@@ -21,23 +21,6 @@ class FixtureMarketAnalysisTransport:
     """Test/fixture-only transport; it cannot make an external request."""
     def __init__(self, response: Mapping[str, Any]): self.response, self.calls = response, 0
     def analyze(self, _payload: Mapping[str, Any], **_limits: Any) -> Mapping[str, Any]: self.calls += 1; return self.response
-def _root(): return Path(__file__).resolve().parents[1]
-class FixedSelectTransport:
-    def __init__(self, runner: Any = subprocess.run): self.runner=runner
-    def request(self, method: str, path: str, payload: object | None=None):
-        if method!="POST" or path!="/query" or not isinstance(payload, Mapping) or not isinstance(payload.get("batch"), list): raise MarketSignalReadError("read_request_invalid")
-        result=[]
-        for item in payload["batch"]:
-            if not isinstance(item, Mapping) or not isinstance(item.get("sql"), str) or not isinstance(item.get("params"), list): raise MarketSignalReadError("fixed_select_invalid")
-            try: _validate_fixed_select(type("S", (), {"sql":item["sql"]})())
-            except D1ReadSafetyError as error: raise MarketSignalReadError("fixed_select_rejected") from error
-            complete=self.runner(["node","--no-warnings","node_modules/wrangler/wrangler-dist/cli.js","d1","execute",DATABASE_NAME,"--remote","--config","./wrangler.toml","--command",_render_fixed_select(item["sql"],item["params"]),"--json"],cwd=_root(),capture_output=True,text=True,check=False)
-            if complete.returncode: raise MarketSignalReadError("wrangler_read_failed")
-            response=_parse_wrangler_json(complete.stdout); rows=response.get("result")
-            if not isinstance(rows,list) or len(rows)!=1 or not isinstance(rows[0],Mapping): raise MarketSignalReadError("wrangler_response_invalid")
-            if rows[0].get("meta",{}).get("changed_db") is not False or rows[0].get("meta",{}).get("rows_written")!=0: raise MarketSignalReadError("unexpected_d1_write")
-            result.append(rows[0])
-        return {"result":result}
 def read_own_site(property_uri: str, start: str, end: str, transport: Any) -> tuple[list[Mapping[str,Any]],list[Mapping[str,Any]],list[Mapping[str,Any]]]:
     pages, affiliate, articles=AiRecommendationD1Reader(transport).fetch_source(property_uri,"web",start,end)
     return articles,pages,affiliate
@@ -149,8 +132,8 @@ def _prepare_live_context(args: Any, *, cache_only: bool) -> dict[str, Any]:
     try:
         end = args.period_end or date.today().isoformat()
         start = args.period_start or (date.fromisoformat(end) - timedelta(days=13)).isoformat()
-        articles, pages, affiliate = read_own_site(args.property_uri, start, end, FixedSelectTransport())
-    except (OSError, KeyError, ValueError, MarketSignalReadError) as error:
+        articles, pages, affiliate = read_own_site(args.property_uri, start, end, WranglerFixedSelectTransport())
+    except (OSError, KeyError, ValueError, MarketSignalReadError, Phase2ACandidateReadError, D1ReadSafetyError) as error:
         raise MarketSignalPreflightError("own_site_d1_read", error) from error
     results, mode = _load_live_serp(args, cache_only=cache_only)
     return _build_live_context(args, articles=articles, pages=pages, affiliate=affiliate, results=results, mode=mode)
@@ -192,7 +175,7 @@ def main(argv: Sequence[str]|None=None)->int:
             else:
                 if planning is None: raise MarketSignalReadError("planning_fixture_required")
                 end=args.period_end or date.today().isoformat(); start=args.period_start or (date.fromisoformat(end)-timedelta(days=13)).isoformat()
-                articles,pages,affiliate=read_own_site(args.property_uri,start,end,FixedSelectTransport())
+                articles,pages,affiliate=read_own_site(args.property_uri,start,end,WranglerFixedSelectTransport())
         if args.live_analysis:
             if args.own_site_fixture:
                 results, mode = _load_live_serp(args, cache_only=False)

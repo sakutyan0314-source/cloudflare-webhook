@@ -51,13 +51,13 @@ class TestMarketSignal(unittest.TestCase):
    returncode=0
    stdout=json.dumps([{'results':[],'meta':{'changed_db':False,'rows_written':0}}])
   seen=[]
-  transport=cli.FixedSelectTransport(runner=lambda command,**_: (seen.append(command) or Done()))
+  transport=cli.WranglerFixedSelectTransport(runner=lambda command,**_: (seen.append(command) or Done()))
   articles,pages,affiliate=cli.read_own_site('https://example.test/','2026-08-01','2026-08-14',transport)
   self.assertEqual(([],[],[]),(articles,pages,affiliate)); self.assertEqual(3,len(seen)); self.assertTrue(all('SELECT' in command[command.index('--command')+1].upper() for command in seen))
   class Changed:
    returncode=0
    stdout=json.dumps([{'results':[],'meta':{'changed_db':True,'rows_written':1}}])
-  with self.assertRaises(cli.MarketSignalReadError): cli.read_own_site('https://example.test/','2026-08-01','2026-08-14',cli.FixedSelectTransport(runner=lambda *_,**__:Changed()))
+  with self.assertRaises(cli.D1ReadSafetyError): cli.read_own_site('https://example.test/','2026-08-01','2026-08-14',cli.WranglerFixedSelectTransport(runner=lambda *_,**__:Changed()))
  def test_live_adapter_missing_key_fails_before_transport_and_does_not_disclose(self):
   calls=[]; adapter=serp.SerpApiGoogleSearchAdapter(api_key='',transport=lambda *args: calls.append(args))
   with self.assertRaises(serp.SerpApiSafetyError) as error: adapter.search(query='Microsoft 365 Copilot')
